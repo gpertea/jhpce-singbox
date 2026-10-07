@@ -9,9 +9,10 @@ Measured facts: `docs/runtime_findings.md`. Test suite: `tests/test_wrapper.sh`.
 | 1 | Repository layout | done |
 | 2 | `etc/mounts.tsv`, automount trigger, nested/autofs mount validation | done, tested |
 | 3 | Wrapper skeleton: binds, synthetic home, `--write`/`--read`, deny binds, `--dry-run`, logging | done, tested |
+| 3b | Durable synthetic home, skel, user mounts file, `--home-mode`, nested ro rebind | done, tested (45 checks) |
 | 4 | Agent config provisioning into synthetic home | next |
 | 5 | Lua modulefile (development copy) | done, tested with `module use` |
-| 6 | Validate on compute nodes | done: compute-148, compute-092 (28/28) |
+| 6 | Validate on compute nodes | done: compute-148, compute-092, compute-147 |
 | 7 | Non-setuid fallback: host-root container under SCE 4.5.1 `--userns` | open |
 | 8 | Codex and Claude modes | open |
 | 9 | Deliberate negative tests through an agent | open |

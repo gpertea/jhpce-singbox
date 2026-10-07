@@ -39,16 +39,17 @@ user did not designate?
 ## Operating principles
 
 1. **Read-only by default, kernel-enforced.** Host system dirs, `/jhpce/shared` and the LIBD
-   exports are bind-mounted `ro`. Writable: `$MYSCRATCH` (default), the synthetic home, scratch
-   `/tmp`, and each `--write PATH`. Writable paths come only from the command line, never from a
+   exports are bind-mounted `ro`; nested mounts under a ro source are rebound ro. Writable:
+   `$MYSCRATCH` (default), the synthetic home, scratch `/tmp`, and each `--write PATH`. Writable paths come only from the command line, never from a
    mounts file.
 2. **Bind real mount points, never autofs roots.** A read-only bind protects exactly one
    filesystem; mounts nested below it keep their own flags. Binding `/dcs04` ro left
    `/dcs04/lieber` writable (measured). The wrapper triggers automounts, checks `/proc/mounts`,
    and aborts on violation.
-3. **Synthetic home, not the real home.** `$HOME` keeps its real path inside, backed by
-   `$MYSCRATCH/ai-sandbox/home`. Always pass `--home`; under `--contain` without it the real home
-   is mounted read-write (measured).
+3. **Synthetic home by default.** `$HOME` keeps its real path inside, backed by
+   `~/.libd-ai-sandbox/home` (durable). `--home-mode real-ro|real-rw` exposes the real home
+   instead, rw only by explicit choice. Always pass `--home` or `--no-home`; under `--contain`
+   with neither, the runtime mounts the real home read-write (measured).
 4. **Write targets must already exist and are checked.** `--write` refuses `/`, system and
    `/jhpce/shared` paths, the real home, whole filesystems, read-only mount roots and their
    ancestors. The runtime must never create a mount point on host storage (measured to happen).

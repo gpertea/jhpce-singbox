@@ -1,22 +1,32 @@
 #!/usr/bin/env bash
 # libd-ai-sandbox: run a shell or an AI agent on JHPCE with LIBD/JHPCE storage
-# mounted read-only. Only $MYSCRATCH and paths given with --write are writable.
+# mounted read-only. Writable by default: $MYSCRATCH, the synthetic home, /tmp,
+# plus each --write PATH.
 #
 # The container root is a skeleton directory; the host's /usr, /etc, /opt and the
-# storage/software trees from etc/mounts.tsv are bind-mounted read-only on top, so
-# the environment (modules, conda_R, Slurm config, users) matches the host node.
+# storage/software trees from the mounts files are bind-mounted read-only on top,
+# so the environment (modules, conda_R, users) matches the host node.
 set -euo pipefail
 
 PROG=libd-ai-sandbox
-VERSION=0.1.0-dev
+VERSION=0.2.0-dev
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 ROOT=${LIBD_AI_SANDBOX_ROOT:-$(dirname "$(dirname "$SELF")")}
 RUNTIME=${LIBD_AI_SANDBOX_RUNTIME:-/jhpce/shared/jhpce/core/singularity/3.11.4/bin/singularity}
 MOUNTS=${LIBD_AI_SANDBOX_MOUNTS:-$ROOT/etc/mounts.tsv}
-MOUNTS_EXTRA=${LIBD_AI_SANDBOX_MOUNTS_EXTRA:-}
 ROOTFS=${LIBD_AI_SANDBOX_ROOTFS:-$ROOT/share/rootfs}
 DENY_LIST=${LIBD_AI_SANDBOX_DENY:-$ROOT/etc/deny-commands.txt}
 DENY_BIN=$ROOT/libexec/deny
+
+REAL_HOME=$(getent passwd "$(id -un)" | cut -d: -f6)
+REAL_HOME=${REAL_HOME:-$HOME}
+CONFIG_DIR=${LIBD_AI_SANDBOX_CONFIG_DIR:-$REAL_HOME/.config/libd-ai-sandbox}
+USER_MOUNTS=$CONFIG_DIR/mounts.tsv
+SKEL=$CONFIG_DIR/skel
+STATE=${LIBD_AI_SANDBOX_STATE:-$REAL_HOME/.libd-ai-sandbox}
+SBX_HOME=${LIBD_AI_SANDBOX_HOME:-$STATE/home}
+SBX_LOGS=$STATE/logs
+HOME_MODE=${LIBD_AI_SANDBOX_HOME_MODE:-synthetic}
 
 # Host paths that may never be made writable.
 PROTECTED_PREFIXES=(/usr /etc /opt /var /boot /proc /sys /dev /run /jhpce/shared)
@@ -26,16 +36,19 @@ usage() {
 Usage: $PROG [options] [-- command [args...]]
 
 Starts a login shell (or the given command) in a container where LIBD/JHPCE storage
-is read-only. Writable: \$MYSCRATCH (unless --no-scratch), and each --write PATH.
+is read-only. Writable: \$MYSCRATCH (unless --no-scratch), the synthetic home, /tmp,
+and each --write PATH.
 
 Options:
-  --write PATH      make PATH writable at the same absolute path (repeatable).
-                    PATH must already exist, may not be a whole filesystem
-                    (e.g. /dcs04/lieber), and may not contain mounted filesystems
-  --read PATH       add PATH read-only at the same path (repeatable), for data
-                    outside the default mounts; same mount rules as mounts.tsv
-  --no-scratch      do not mount \$MYSCRATCH writable (synthetic home and /tmp
-                    in \$MYSCRATCH/ai-sandbox stay writable)
+  --write PATH      make PATH writable at the same path (repeatable). PATH must
+                    exist, may not be a whole filesystem (e.g. /dcs04/lieber),
+                    a system path, or contain other mounted filesystems
+  --read PATH       add PATH read-only at the same path (repeatable)
+  --no-scratch      do not mount \$MYSCRATCH writable
+  --home-mode MODE  synthetic (default): \$HOME is a separate sandbox home
+                    real-ro: \$HOME is your real home, read-only
+                    real-rw: \$HOME is your real home, WRITABLE (at your own risk:
+                             the agent can change dotfiles your host logins run)
   --cmd STRING      run STRING with 'bash -lc' instead of an interactive shell
   --agent NAME      shell (default); codex and claude are not implemented yet
   --reset-home      archive the synthetic home and start a fresh one
@@ -45,15 +58,24 @@ Options:
   --version
   -h, --help
 
-Synthetic home:
-  \$HOME inside is \$MYSCRATCH/ai-sandbox/home on the host. Its ~/.bashrc runs at
-  every session start (after the JHPCE site profile): add 'module load ...' lines
-  there. Edit it from the host or inside with: nano ~/.bashrc
+Synthetic home (--home-mode synthetic):
+  \$HOME inside is $SBX_HOME on the host; it persists between sessions.
+  Its ~/.bashrc runs at every session start, after the JHPCE site profile: add
+  'module load ...' lines there. Edit it from the host or inside (nano ~/.bashrc);
+  in a running session apply changes with 'source ~/.bashrc'.
+
+Per-user customization ($CONFIG_DIR):
+  mounts.tsv   extra read-only mounts, same format as the site mounts file
+  skel/        files copied into the synthetic home when missing there
+               (e.g. skel/.bashrc as your durable template)
 
 Environment:
+  LIBD_AI_SANDBOX_HOME          synthetic home location [$SBX_HOME]
+  LIBD_AI_SANDBOX_HOME_MODE     default --home-mode [$HOME_MODE]
+  LIBD_AI_SANDBOX_CONFIG_DIR    per-user config dir [$CONFIG_DIR]
   LIBD_AI_SANDBOX_RUNTIME       runtime binary [$RUNTIME]
-  LIBD_AI_SANDBOX_MOUNTS        read-only mounts file [$MOUNTS]
-  LIBD_AI_SANDBOX_MOUNTS_EXTRA  optional second mounts file (same format)
+  LIBD_AI_SANDBOX_MOUNTS        site read-only mounts file [$MOUNTS]
+  LIBD_AI_SANDBOX_MOUNTS_EXTRA  one more mounts file (same format)
   LIBD_AI_SANDBOX_ROOTFS        skeleton root directory [$ROOTFS]
 EOF
 }
@@ -71,6 +93,8 @@ while [ $# -gt 0 ]; do
         --read)         [ $# -ge 2 ] || die "--read needs a path"; READ_REQ+=("$2"); shift 2 ;;
         --read=*)       READ_REQ+=("${1#*=}"); shift ;;
         --no-scratch)   SCRATCH_RW=0; shift ;;
+        --home-mode)    [ $# -ge 2 ] || die "--home-mode needs a value"; HOME_MODE=$2; shift 2 ;;
+        --home-mode=*)  HOME_MODE=${1#*=}; shift ;;
         --cmd)          [ $# -ge 2 ] || die "--cmd needs a string"; CMD_STR=$2; shift 2 ;;
         --agent)        [ $# -ge 2 ] || die "--agent needs a name"; AGENT=$2; shift 2 ;;
         --agent=*)      AGENT=${1#*=}; shift ;;
@@ -90,6 +114,11 @@ case "$AGENT" in
     codex|claude) die "--agent $AGENT is planned but not implemented yet; use --agent shell" ;;
     *) die "unknown agent '$AGENT'" ;;
 esac
+case "$HOME_MODE" in
+    synthetic|real-ro|real-rw) ;;
+    *) die "--home-mode must be synthetic, real-ro or real-rw (got '$HOME_MODE')" ;;
+esac
+[ "$RESET_HOME" = 0 ] || [ "$HOME_MODE" = synthetic ] || die "--reset-home only applies to --home-mode synthetic"
 
 # ------------------------------------------------------------ preconditions --
 HOST=$(hostname)
@@ -105,12 +134,14 @@ esac
 [ -n "${MYSCRATCH:-}" ] || die "MYSCRATCH is not set"
 MYSCRATCH=$(readlink -f "$MYSCRATCH")
 [ -d "$MYSCRATCH" ] && [ -O "$MYSCRATCH" ] || die "MYSCRATCH ($MYSCRATCH) is not a directory you own"
-REAL_HOME=$HOME
+[ -d "$REAL_HOME" ] || die "cannot determine your home directory"
+SCR=$MYSCRATCH/ai-sandbox
+SBX_WORK=$SCR/work
+SBX_CACHE=$SCR/cache
 
 # --------------------------------------------------------- mount table ------
-# /proc/mounts escapes spaces etc. as octal; decode the ones that occur in paths.
 MNT_PATH=(); MNT_TYPE=()
-load_mount_table() {
+load_mount_table() {   # /proc/mounts escapes spaces etc. as octal
     MNT_PATH=(); MNT_TYPE=()
     local dev mp fs rest
     while read -r dev mp fs rest; do
@@ -118,8 +149,7 @@ load_mount_table() {
         MNT_PATH+=("$mp"); MNT_TYPE+=("$fs")
     done < /proc/mounts
 }
-# Print "mountpoint<TAB>fstype" of the filesystem containing $1 (longest prefix).
-containing_mount() {
+containing_mount() {   # "mountpoint<TAB>fstype" of the filesystem holding $1
     local p=$1 best="" bt="" i m
     for i in "${!MNT_PATH[@]}"; do
         m=${MNT_PATH[$i]}
@@ -129,38 +159,57 @@ containing_mount() {
     done
     printf '%s\t%s\n' "$best" "$bt"
 }
-# Print every mount point strictly below $1.
-mounts_below() {
-    local p=$1 m
-    for m in "${MNT_PATH[@]}"; do
-        if [ "$p" = / ]; then [ "$m" != / ] && echo "$m"
-        elif [[ "$m" == "$p"/* ]]; then echo "$m"; fi
+mounts_below() {       # "mountpoint<TAB>fstype" for every mount strictly below $1
+    local p=$1 i m
+    for i in "${!MNT_PATH[@]}"; do
+        m=${MNT_PATH[$i]}
+        if [ "$p" = / ]; then [ "$m" != / ] && printf '%s\t%s\n' "$m" "${MNT_TYPE[$i]}"
+        elif [[ "$m" == "$p"/* ]]; then printf '%s\t%s\n' "$m" "${MNT_TYPE[$i]}"; fi
     done | sort -u
 }
-is_under() {  # is_under PATH PREFIX : PATH equals PREFIX or lies below it
+is_under() {  # PATH equals PREFIX or lies below it
     [ "$1" = "$2" ] || [ "$2" = / ] || [[ "$1" == "$2"/* ]]
 }
-# A path is safe to bind as one unit if it is not an autofs map and nothing is
-# mounted below it (nested mounts would keep their own, possibly rw, flags).
-check_single_fs() {
-    local p=$1 what=$2 cm mp fs below
-    cm=$(containing_mount "$p"); mp=${cm%%$'\t'*}; fs=${cm#*$'\t'}
-    [ "$fs" != autofs ] ||
-        die "$what $p is an autofs map ($mp); bind a mounted export below it instead (e.g. $mp/lieber)"
-    below=$(mounts_below "$p")
-    [ -z "$below" ] ||
-        die "$what $p has filesystems mounted below it, which a bind would not cover:"$'\n'"$below"
-}
-
-# ------------------------------------------------------ resolve bind list ---
 # lstat/readlink on an autofs indirect-map entry does not mount it; looking up a
 # name *inside* it does. Mount it now so /proc/mounts reflects reality.
 trigger_automount() { [ -d "$1" ] && ls -d "$1/." >/dev/null 2>&1; return 0; }
-BIND_SRC=(); BIND_DST=(); BIND_MODE=()
-add_bind() { BIND_SRC+=("$1"); BIND_DST+=("$2"); BIND_MODE+=("$3"); }
+not_autofs() {
+    local p=$1 what=$2 cm mp fs
+    cm=$(containing_mount "$p"); mp=${cm%%$'\t'*}; fs=${cm#*$'\t'}
+    [ "$fs" != autofs ] ||
+        die "$what $p is an autofs map ($mp); use a mounted export below it instead (e.g. $mp/lieber)"
+}
 
-# 1. read-only mounts from the config file(s)
-RO_SRC=()
+# ------------------------------------------------------ bind bookkeeping ---
+BIND_SRC=(); BIND_DST=(); BIND_MODE=(); BIND_NOTE=()
+add_bind() { BIND_SRC+=("$1"); BIND_DST+=("$2"); BIND_MODE+=("$3"); BIND_NOTE+=("${4:-}"); }
+RO_SRC=(); RO_DST=()
+# Read-only sources: a ro bind is recursive, but nested filesystems keep their own
+# flags. Re-bind each nested mount read-only; refuse nested autofs maps (anything
+# they automount later would arrive with its own, possibly writable, flags).
+plan_ro() {
+    local src=$1 dst=$2 note=${3:-} row m fs
+    not_autofs "$src" "read-only mount"
+    add_bind "$src" "$dst" ro "$note"
+    RO_SRC+=("$src"); RO_DST+=("$dst")
+    while IFS=$'\t' read -r m fs; do
+        [ -n "$m" ] || continue
+        [ "$fs" != autofs ] || die "read-only mount $src contains an autofs map at $m; list the exports below it instead"
+        add_bind "$m" "$dst${m#"$src"}" ro "nested in $src"
+    done < <(mounts_below "$src")
+}
+# Paths requested on the command line keep the spelling the user gave (symlinks
+# included) as the destination; the source is the resolved target.
+logical_path() { realpath -s -- "$1"; }
+
+# ------------------------------------------------------ mounts files --------
+MOUNT_FILES=("$MOUNTS")
+[ -f "$USER_MOUNTS" ] && MOUNT_FILES+=("$USER_MOUNTS")
+if [ -n "${LIBD_AI_SANDBOX_MOUNTS_EXTRA:-}" ]; then
+    [ -f "$LIBD_AI_SANDBOX_MOUNTS_EXTRA" ] || die "extra mounts file not found: $LIBD_AI_SANDBOX_MOUNTS_EXTRA"
+    MOUNT_FILES+=("$LIBD_AI_SANDBOX_MOUNTS_EXTRA")
+fi
+RO_PLAN=()   # "src<TAB>dest<TAB>note" collected first, validated after automounts
 parse_mounts_file() {
     local file=$1 line src dest mode req extra n=0
     while IFS= read -r line || [ -n "$line" ]; do
@@ -174,115 +223,176 @@ parse_mounts_file() {
         [[ "$src" == /* && "$dest" == /* ]] || die "$file:$n: paths must be absolute"
         if [ ! -e "$src" ]; then
             [ "$req" = yes ] && die "required mount source missing: $src ($file:$n)"
-            warn "skipping missing optional mount $src"
+            warn "skipping missing optional mount $src ($file)"
             continue
         fi
         trigger_automount "$src"
-        src=$(readlink -f "$src")
-        RO_SRC+=("$src"); add_bind "$src" "$dest" ro
+        RO_PLAN+=("$(readlink -f "$src")"$'\t'"$dest"$'\t'"")
     done < "$file"
 }
-parse_mounts_file "$MOUNTS"
-[ -z "$MOUNTS_EXTRA" ] || { [ -f "$MOUNTS_EXTRA" ] || die "extra mounts file not found: $MOUNTS_EXTRA"; parse_mounts_file "$MOUNTS_EXTRA"; }
+for f in "${MOUNT_FILES[@]}"; do parse_mounts_file "$f"; done
 
-# 2. --read paths (same path inside)
+# ------------------------------------------------- command-line paths -------
+home_conflict() {   # dest or src equal to / an ancestor of the real home
+    is_under "$REAL_HOME" "$1"
+}
 for p in "${READ_REQ[@]}"; do
     [ -e "$p" ] || die "--read path does not exist: $p"
     trigger_automount "$p"
-    p=$(readlink -f "$p")
-    RO_SRC+=("$p"); add_bind "$p" "$p" ro
+    s=$(readlink -f "$p"); d=$(logical_path "$p")
+    if home_conflict "$d" || home_conflict "$s"; then
+        die "--read $p covers your real home; use --home-mode real-ro instead"
+    fi
+    if [ "$HOME_MODE" = real-ro ] && is_under "$d" "$REAL_HOME"; then
+        warn "--read $p is redundant with --home-mode real-ro; skipping"; continue
+    fi
+    RO_PLAN+=("$s"$'\t'"$d"$'\t'"--read")
 done
 
-# 3. writable paths: $MYSCRATCH and --write
-WRITE_PATHS=()
-[ "$SCRATCH_RW" = 1 ] && WRITE_PATHS+=("$MYSCRATCH")
+WRITE_PLAN=()   # "src<TAB>dest<TAB>note"
+[ "$SCRATCH_RW" = 1 ] && WRITE_PLAN+=("$MYSCRATCH"$'\t'"$MYSCRATCH"$'\t'"\$MYSCRATCH")
 for p in "${WRITE_REQ[@]}"; do
     [ -d "$p" ] || die "--write path must be an existing directory: $p (create it first)"
     trigger_automount "$p"
-    WRITE_PATHS+=("$(readlink -f "$p")")
+    s=$(readlink -f "$p"); d=$(logical_path "$p")
+    if home_conflict "$d" || home_conflict "$s"; then
+        die "refusing --write $p: it is or contains your real home (see --home-mode real-rw)"
+    fi
+    if [ "$HOME_MODE" = real-rw ] && is_under "$d" "$REAL_HOME"; then
+        warn "--write $p is redundant with --home-mode real-rw; skipping"; continue
+    fi
+    WRITE_PLAN+=("$s"$'\t'"$d"$'\t'"--write")
 done
 
-load_mount_table   # after readlink -f above, so automounts have been triggered
+# ------------------------------------------------------------- home mode ----
+HOME_ARGS=()
+case "$HOME_MODE" in
+    synthetic)
+        if [ ! -e "$SBX_HOME" ]; then
+            if is_under "$SBX_HOME" "$REAL_HOME" || is_under "$SBX_HOME" "$MYSCRATCH"; then :
+            else die "synthetic home $SBX_HOME does not exist; create it first"; fi
+        fi
+        ;;
+    real-ro)
+        trigger_automount "$REAL_HOME"
+        RO_PLAN+=("$(readlink -f "$REAL_HOME")"$'\t'"$REAL_HOME"$'\t'"real home")
+        HOME_ARGS=(--no-home)
+        ;;
+    real-rw)
+        HOME_ARGS=(--home "$REAL_HOME")
+        ;;
+esac
 
-for i in "${!BIND_SRC[@]}"; do
-    check_single_fs "${BIND_SRC[$i]}" "read-only mount"
+load_mount_table   # after all automount triggers
+
+for row in "${RO_PLAN[@]}"; do
+    IFS=$'\t' read -r s d note <<<"$row"
+    plan_ro "$s" "$d" "$note"
 done
 
-for w in "${WRITE_PATHS[@]}"; do
-    [ "$w" != / ] || die "refusing to make / writable"
+check_writable() {   # validate a path that will be mounted (or used) read-write
+    local s=$1 d=$2 what=$3 pp r cm mp below
+    [ "$s" != / ] && [ "$d" != / ] || die "refusing to make / writable"
     for pp in "${PROTECTED_PREFIXES[@]}"; do
-        is_under "$w" "$pp" && die "refusing to make system/shared path writable: $w"
+        if is_under "$s" "$pp" || is_under "$d" "$pp"; then
+            die "refusing to make system/shared path writable: $what $d"
+        fi
     done
-    if is_under "$w" "$REAL_HOME" || is_under "$REAL_HOME" "$w"; then
-        die "refusing --write $w: it overlaps your real home, which the synthetic home replaces"
-    fi
-    for r in "${RO_SRC[@]}"; do
-        [ "$w" != "$r" ] || die "refusing --write $w: it is a whole read-only mount; pick a directory inside it"
-        if [[ "$r" == "$w"/* ]]; then die "refusing --write $w: it contains the read-only mount $r"; fi
+    # A read-only mount nested inside a writable one is fine (it is mounted after
+    # its parent and wins) as long as it lands at the matching place inside; if the
+    # writable bind exposes the same data at another path, the ro mount would not
+    # cover it there.
+    local k r rd
+    for k in "${!RO_SRC[@]}"; do
+        r=${RO_SRC[$k]}; rd=${RO_DST[$k]}
+        [ "$s" != "$r" ] || die "refusing $what $d: it is a whole read-only mount; pick a directory inside it"
+        if [[ "$r" == "$s"/* ]] && [ "$rd" != "$d${r#"$s"}" ]; then
+            die "refusing $what $d: it contains the read-only mount $r at a different path inside"
+        fi
+        if [[ "$rd" == "$d"/* ]] && [ "$r" != "$s${rd#"$d"}" ]; then
+            die "refusing $what $d: it contains the read-only mount point $rd for different data"
+        fi
     done
-    cm=$(containing_mount "$w"); mp=${cm%%$'\t'*}
-    if [ "$w" = "$mp" ] && [ "$w" != "$MYSCRATCH" ]; then
-        die "refusing --write $w: it is an entire filesystem; pick a directory inside it"
+    cm=$(containing_mount "$s"); mp=${cm%%$'\t'*}
+    if [ "$s" = "$mp" ] && [ "$s" != "$MYSCRATCH" ] && [ "$s" != "$REAL_HOME" ]; then
+        die "refusing $what $d: it is an entire filesystem; pick a directory inside it"
     fi
-    check_single_fs "$w" "writable path"
-    add_bind "$w" "$w" rw
+    not_autofs "$s" "$what"
+    below=$(mounts_below "$s" | cut -f1)
+    if [ -n "$below" ]; then
+        if [ "$s" = "$REAL_HOME" ]; then
+            if mounts_below "$s" | grep -q $'\tautofs$'; then
+                die "your home contains an autofs map; cannot mount it"
+            fi
+        else
+            die "$what $d has filesystems mounted below it, which would keep their own flags:"$'\n'"$below"
+        fi
+    fi
+}
+
+for row in "${WRITE_PLAN[@]}"; do
+    IFS=$'\t' read -r s d note <<<"$row"
+    check_writable "$s" "$d" "${note:---write}"
+    add_bind "$s" "$d" rw "$note"
 done
 
-# 4. deny wrappers over escape commands
+case "$HOME_MODE" in
+    synthetic)
+        # Validate the path the home will have; do not create anything before launch
+        # (--dry-run and --print-binds must not touch the filesystem).
+        SBX_HOME=$(realpath -m -- "$SBX_HOME")
+        home_conflict "$SBX_HOME" && die "synthetic home $SBX_HOME may not be or contain your real home"
+        check_writable "$SBX_HOME" "$SBX_HOME" "synthetic home"
+        HOME_ARGS=(--home "$SBX_HOME:$REAL_HOME")
+        ;;
+    real-rw)
+        check_writable "$REAL_HOME" "$REAL_HOME" "real home"
+        ;;
+esac
+
+# Caches go to scratch so they do not fill the home quota. Without the
+# $MYSCRATCH bind the cache directory is bound on its own.
+[ "$SCRATCH_RW" = 1 ] || add_bind "$SBX_CACHE" "$SBX_CACHE" rw "cache"
+
+# Deny wrappers over escape commands
 if [ -f "$DENY_LIST" ]; then
     while IFS= read -r c || [ -n "$c" ]; do
         c=${c%%#*}; c=${c//[[:space:]]/}
         [ -n "$c" ] || continue
-        [ -e "$c" ] && add_bind "$DENY_BIN" "$c" ro
+        [ -e "$c" ] && add_bind "$DENY_BIN" "$c" ro "deny"
     done < "$DENY_LIST"
 fi
 
-# Parents must be mounted before children: order binds by destination depth.
+# Parents must be mounted before children: order by destination depth, and drop
+# exact duplicate destinations (the runtime ignores later ones anyway).
 ORDER=$(for i in "${!BIND_DST[@]}"; do
             d=${BIND_DST[$i]}; s=${d//[^\/]/}
             printf '%d\t%s\t%d\n' "${#s}" "$d" "$i"
-        done | sort -t$'\t' -k1,1n -k2,2 | cut -f3)
+        done | sort -t$'\t' -k1,1n -k2,2 -k3,3n | awk -F'\t' '!seen[$2]++' | cut -f3)
 
 BIND_ARGS=(); BIND_TABLE=()
 for i in $ORDER; do
     s=${BIND_SRC[$i]}; d=${BIND_DST[$i]}; m=${BIND_MODE[$i]}
-    [ "$m" = ro ] && BIND_ARGS+=(--bind "$s:$d:ro") || BIND_ARGS+=(--bind "$s:$d")
-    BIND_TABLE+=("$m"$'\t'"$s"$'\t'"$d")
+    if [ "$m" = ro ]; then BIND_ARGS+=(--bind "$s:$d:ro"); else BIND_ARGS+=(--bind "$s:$d"); fi
+    BIND_TABLE+=("$m"$'\t'"$s"$'\t'"$d"$'\t'"${BIND_NOTE[$i]}")
 done
 
-# ------------------------------------------------------------ scratch dirs --
-SBX=$MYSCRATCH/ai-sandbox
-SBX_HOME=$SBX/home
-SBX_WORK=$SBX/work
-SBX_LOGS=$SBX/logs
-
-init_home() {
-    mkdir -p "$SBX_HOME"/{.cache,.config,.local/bin,R}
-    if [ ! -e "$SBX_HOME/.bashrc" ]; then
-        cat > "$SBX_HOME/.bashrc" <<'EOF'
-# ~/.bashrc of the libd-ai-sandbox synthetic home (not your real home).
-# Host path: $MYSCRATCH/ai-sandbox/home/.bashrc -- edit it from the host or from
-# inside the sandbox (nano ~/.bashrc). The wrapper never overwrites this file;
-# --reset-home archives it with the rest of the synthetic home.
-# Runs at the start of every session, after the JHPCE site profile, so it is the
-# place for 'module load ...' lines. Do not 'set -u' before module commands.
-[ -f /etc/bashrc ] && . /etc/bashrc
-PS1='[sbx \u@\h \W]\$ '
-export EDITOR=nano
-# module load conda_R/4.5.x
-EOF
-    fi
-    if [ ! -e "$SBX_HOME/.bash_profile" ]; then
-        printf '%s\n' '# Generated by libd-ai-sandbox' '[ -f ~/.bashrc ] && . ~/.bashrc' > "$SBX_HOME/.bash_profile"
-    fi
-}
+WRITABLE=()
+for row in "${WRITE_PLAN[@]}"; do IFS=$'\t' read -r s d note <<<"$row"; WRITABLE+=("$d"); done
+case "$HOME_MODE" in
+    synthetic) WRITABLE+=("$REAL_HOME (synthetic: $SBX_HOME)") ;;
+    real-rw)   WRITABLE+=("$REAL_HOME (REAL home)") ;;
+esac
+RW_LIST=$(printf '%s:' "${WRITABLE[@]%% (*}" /tmp); RW_LIST=${RW_LIST%:}
 
 # ------------------------------------------------------------ in-container --
-INNER_PWD=$REAL_HOME
 HOST_PWD=$(pwd -P 2>/dev/null || echo /)
+INNER_PWD=$REAL_HOME
+if [ "$HOME_MODE" != synthetic ] && is_under "$HOST_PWD" "$REAL_HOME"; then INNER_PWD=$HOST_PWD; fi
 for i in "${!BIND_DST[@]}"; do
-    if [ "${BIND_SRC[$i]}" = "${BIND_DST[$i]}" ] && [ -d "${BIND_SRC[$i]}" ] && is_under "$HOST_PWD" "${BIND_SRC[$i]}"; then
-        INNER_PWD=$HOST_PWD; break
+    s=${BIND_SRC[$i]}
+    if [ -d "$s" ] && [ "${BIND_NOTE[$i]}" != deny ] && is_under "$HOST_PWD" "$s"; then
+        INNER_PWD=${BIND_DST[$i]}${HOST_PWD#"$s"}; break
     fi
 done
 
@@ -294,29 +404,35 @@ else
     INNER=(bash -l)
 fi
 
-RW_LIST=$(printf '%s:' "${WRITE_PATHS[@]}"); RW_LIST=${RW_LIST%:}
 CMD=("$RUNTIME" exec
      --contain --cleanenv --no-mount cwd
-     --home "$SBX_HOME:$REAL_HOME"
+     "${HOME_ARGS[@]}"
      --workdir "$SBX_WORK"
      --pwd "$INNER_PWD"
      --env "TERM=${TERM:-xterm}"
+     --env "XDG_CACHE_HOME=$SBX_CACHE"
      --env "LIBD_AI_SANDBOX=$VERSION"
+     --env "LIBD_AI_SANDBOX_HOME_MODE=$HOME_MODE"
      --env "LIBD_AI_SANDBOX_RW=$RW_LIST"
      "${BIND_ARGS[@]}"
      "$ROOTFS"
      "${INNER[@]}")
 
 print_binds() {
-    printf '%-4s %-45s %s\n' MODE SOURCE DEST
-    local row
+    printf '%-4s %-48s %s\n' MODE SOURCE DEST
+    local row m s d n
     for row in "${BIND_TABLE[@]}"; do
-        IFS=$'\t' read -r m s d <<<"$row"
-        [ "$s" = "$DENY_BIN" ] && s="(deny)"
-        printf '%-4s %-45s %s\n' "$m" "$s" "$d"
+        IFS=$'\t' read -r m s d n <<<"$row"
+        [ "$n" = deny ] && s="(deny)"
+        [ -n "$n" ] && [ "$n" != deny ] && d="$d   [$n]"
+        printf '%-4s %-48s %s\n' "$m" "$s" "$d"
     done
-    printf '%-4s %-45s %s\n' rw "$SBX_HOME" "$REAL_HOME (synthetic home)"
-    printf '%-4s %-45s %s\n' rw "$SBX_WORK/{tmp,var_tmp}" "/tmp, /var/tmp"
+    case "$HOME_MODE" in
+        synthetic) printf '%-4s %-48s %s\n' rw "$SBX_HOME" "$REAL_HOME   [synthetic home]" ;;
+        real-ro)   ;;
+        real-rw)   printf '%-4s %-48s %s\n' rw "$REAL_HOME" "$REAL_HOME   [REAL home, writable]" ;;
+    esac
+    printf '%-4s %-48s %s\n' rw "$SBX_WORK/{tmp,var_tmp}" "/tmp, /var/tmp"
 }
 
 if [ "$PRINT_BINDS" = 1 ]; then print_binds; exit 0; fi
@@ -329,7 +445,7 @@ json_str() {
 }
 json_arr() { local sep="" x; printf '['; for x in "$@"; do printf '%s' "$sep"; json_str "$x"; sep=,; done; printf ']'; }
 write_log() {
-    local f=$1 sep="" row m s d
+    local f=$1 sep="" row m s d n
     {
         printf '{\n'
         printf '  "time": %s,\n' "$(json_str "$(date -Iseconds)")"
@@ -341,15 +457,16 @@ write_log() {
         printf '  "runtime_version": %s,\n' "$(json_str "$("$RUNTIME" --version 2>&1 | head -1)")"
         printf '  "host_os": %s,\n' "$(json_str "$(cat /etc/redhat-release 2>/dev/null)")"
         printf '  "rootfs": %s,\n' "$(json_str "$ROOTFS")"
-        printf '  "mounts_files": %s,\n' "$(json_arr "$MOUNTS" ${MOUNTS_EXTRA:+"$MOUNTS_EXTRA"})"
+        printf '  "mounts_files": %s,\n' "$(json_arr "${MOUNT_FILES[@]}")"
         printf '  "agent": %s,\n' "$(json_str "$AGENT")"
-        printf '  "writable": %s,\n' "$(json_arr "${WRITE_PATHS[@]}" "$SBX_HOME" "$SBX_WORK")"
+        printf '  "home_mode": %s,\n' "$(json_str "$HOME_MODE")"
+        printf '  "writable": %s,\n' "$(json_arr "${WRITABLE[@]}" "$SBX_WORK")"
         printf '  "host_cwd": %s,\n' "$(json_str "$HOST_PWD")"
-        printf '  "dry_run": %s,\n' "$([ "$DRY_RUN" = 1 ] && echo true || echo false)"
         printf '  "binds": ['
         for row in "${BIND_TABLE[@]}"; do
-            IFS=$'\t' read -r m s d <<<"$row"
-            printf '%s\n    {"mode": %s, "src": %s, "dest": %s}' "$sep" "$(json_str "$m")" "$(json_str "$s")" "$(json_str "$d")"
+            IFS=$'\t' read -r m s d n <<<"$row"
+            printf '%s\n    {"mode": %s, "src": %s, "dest": %s, "note": %s}' "$sep" \
+                "$(json_str "$m")" "$(json_str "$s")" "$(json_str "$d")" "$(json_str "$n")"
             sep=,
         done
         printf '\n  ],\n'
@@ -365,22 +482,57 @@ if [ "$DRY_RUN" = 1 ]; then
     exit 0
 fi
 
-# ------------------------------------------------------------------ launch --
-mkdir -p "$SBX" && chmod 700 "$SBX"
-if [ "$RESET_HOME" = 1 ] && [ -d "$SBX_HOME" ]; then
-    archived=$SBX/home.$(date +%Y%m%d-%H%M%S)
-    mv "$SBX_HOME" "$archived"
-    echo "$PROG: previous synthetic home archived to $archived" >&2
-fi
-mkdir -p "$SBX_WORK" "$SBX_LOGS"
-init_home
+# ------------------------------------------------------------ prepare dirs --
+init_synthetic_home() {
+    if [ "$RESET_HOME" = 1 ] && [ -d "$SBX_HOME" ]; then
+        local archived
+        archived=$SBX_HOME.$(date +%Y%m%d-%H%M%S)
+        mv "$SBX_HOME" "$archived"
+        echo "$PROG: previous synthetic home archived to $archived" >&2
+    fi
+    if [ ! -d "$SBX_HOME" ] && [ -d "$SCR/home" ] && [ "$SBX_HOME" != "$SCR/home" ]; then
+        warn "an older synthetic home exists at $SCR/home; to keep it: mv $SCR/home $SBX_HOME"
+    fi
+    mkdir -p "$SBX_HOME"
+    chmod 700 "$SBX_HOME"
+    # Durable per-user template first, so it wins over the built-in defaults.
+    [ -d "$SKEL" ] && cp -a --no-clobber "$SKEL/." "$SBX_HOME/"
+    mkdir -p "$SBX_HOME"/{.config,.local/bin,R}
+    if [ ! -e "$SBX_HOME/.bashrc" ]; then
+        {
+            echo "# ~/.bashrc of the libd-ai-sandbox synthetic home (not your real home)."
+            echo "# Host path: $SBX_HOME/.bashrc"
+            cat <<'EOF'
+# Edit it from the host or inside the sandbox (nano ~/.bashrc); in a running
+# session apply changes with 'source ~/.bashrc'. The wrapper never overwrites this
+# file. For a template that survives --reset-home, keep a copy in
+# ~/.config/libd-ai-sandbox/skel/.bashrc (on the host).
+# Runs at the start of every session, after the JHPCE site profile, so it is the
+# place for 'module load ...' lines. Do not 'set -u' before module commands.
+[ -f /etc/bashrc ] && . /etc/bashrc
+PS1='[sbx \u@\h \W]\$ '
+export EDITOR=nano
+# module load conda_R/4.5.x
+EOF
+        } > "$SBX_HOME/.bashrc"
+    fi
+    if [ ! -e "$SBX_HOME/.bash_profile" ]; then
+        printf '%s\n' '# Generated by libd-ai-sandbox' '[ -f ~/.bashrc ] && . ~/.bashrc' > "$SBX_HOME/.bash_profile"
+    fi
+}
+
+mkdir -p "$SCR" "$SBX_WORK" "$SBX_CACHE" "$SBX_LOGS"
+chmod 700 "$SCR" "$STATE" 2>/dev/null || true
+if [ "$HOME_MODE" = synthetic ]; then init_synthetic_home; fi
 LOG=$SBX_LOGS/$(date +%Y%m%d-%H%M%S)-$$.json
 write_log "$LOG"
 
 if [ "$QUIET" != 1 ]; then
     {
         echo "$PROG $VERSION: LIBD/JHPCE storage is read-only in this session."
-        echo "  writable: ${WRITE_PATHS[*]:-(none)} + synthetic home, /tmp"
+        printf '  writable: %s\n' "${WRITABLE[@]}" /tmp
+        [ "$HOME_MODE" = real-rw ] &&
+            echo "  WARNING: your real home is writable; the agent can change dotfiles that your host logins run."
         echo "  log:      $LOG"
     } >&2
 fi

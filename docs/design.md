@@ -1,4 +1,4 @@
-# libd-ai-sandbox: Design (revision 3, 2026-10-07)
+# libd-ai-sandbox: Design (revision 4, 2026-10-07)
 
 Supersedes `docs/initial/project_details.md`. Measured facts behind the choices here are in
 `docs/runtime_findings.md`.
@@ -86,50 +86,57 @@ Inside the container the agent sees:
 |---|---|---|
 | `/usr`, `/etc`, `/opt`, `/var/lib/sss`, `/var/lib/alternatives` | host | **ro** |
 | `/jhpce/shared` | host | **ro** |
-| `/dcs04/lieber`, `/dcs05/lieber`, `/dcs07/lieber` (`etc/mounts.tsv`) | host NFS exports | **ro** |
-| any `--read PATH` | host | **ro**, same path |
-| `$MYSCRATCH` (`/fastscratch/myscratch/<user>`) | host | **rw** by default (`--no-scratch` to drop) |
-| any `--write PATH` | host | **rw**, same path |
-| `$HOME` (`/users/<user>`) | `$MYSCRATCH/ai-sandbox/home` | rw (synthetic) |
+| `/dcs04/lieber`, `/dcs05/lieber`, `/dcs07/lieber` (site `etc/mounts.tsv`) | host NFS exports | **ro** |
+| entries of `~/.config/libd-ai-sandbox/mounts.tsv` | host | **ro** |
+| any `--read PATH` | host | **ro**, at the path as typed |
+| `$MYSCRATCH` | host | **rw** by default (`--no-scratch` to drop) |
+| any `--write PATH` | host | **rw**, at the path as typed |
+| `$HOME` | depends on `--home-mode` (§8) | synthetic rw / real ro / real rw |
 | `/tmp`, `/var/tmp` | `$MYSCRATCH/ai-sandbox/work/{tmp,var_tmp}` | rw |
+| `$XDG_CACHE_HOME` | `$MYSCRATCH/ai-sandbox/cache` | rw |
 | everything else (skeleton) | `share/rootfs` | ro, empty |
 
-`$MYSCRATCH` is writable because it is the user's own purge-able scratch space, it is where the
-agent's home and temp already live, and it is the natural staging area for intermediate results.
-It holds nothing that is shared or irreplaceable by policy.
+`$MYSCRATCH` is writable because it is the user's own purge-able scratch space and the natural
+staging area for intermediate results. Caches go there too (`XDG_CACHE_HOME`), so pip/R/agent
+caches do not fill the home quota.
 
 ### 5.1 Mount rules (enforced by the wrapper at every launch)
 
-1. **A read-only bind protects exactly one filesystem.** Nested mounts keep their own flags
-   (binding the autofs root `/dcs04` read-only left `/dcs04/lieber` writable, measured). For every
-   bind source the wrapper first triggers its automount (a name lookup *inside* it; `readlink` and
-   `stat` do not trigger autofs), then reads `/proc/mounts` and refuses the launch if the source lies
-   on an autofs map or if any filesystem is mounted below it.
-2. Mounts files (`etc/mounts.tsv`, optional `$LIBD_AI_SANDBOX_MOUNTS_EXTRA`) may only contain
-   `ro` entries. Format `src dest mode required`; missing `required=no` sources are skipped.
-3. The wrapper always passes `--home`; under `--contain` without it the real home is mounted
-   read-write (measured).
-4. Bind arguments are ordered by destination depth so parents are mounted before children.
-5. `--contain`, `--cleanenv`, `--no-mount cwd` always. The container starts in the host's current
-   directory when that directory is visible inside, otherwise in `$HOME`.
+1. **Automounts first.** Every source is looked up *inside* (`ls -d path/.`) before validation;
+   `readlink` and `stat` do not trigger autofs. Then `/proc/mounts` is read once.
+2. **A bind is recursive, but nested filesystems keep their own flags** (binding the autofs root
+   `/dcs04` read-only left `/dcs04/lieber` writable, measured). Therefore:
+   - a source that lies on an autofs map is refused (later automounts would arrive writable);
+   - for read-only sources, every nested non-autofs mount is **rebound read-only** explicitly
+     (e.g. `~/ceph_backup` FUSE in `--home-mode real-ro`); a nested autofs map is refused;
+   - writable sources with anything mounted below them are refused (except the real home in
+     `real-rw`, where nested mounts keep their host flags, as on the host).
+3. Mounts files may only contain `ro` entries: format `src dest mode required`.
+4. A read-only mount nested inside a writable one is allowed only when it lands at the matching
+   path inside it; otherwise the writable bind would expose the same data elsewhere.
+5. Binds are ordered by destination depth so parents are mounted before children; duplicate
+   destinations are dropped.
+6. `--contain`, `--cleanenv`, `--no-mount cwd` always; `--home` or `--no-home` always explicit
+   (under `--contain` with neither, the runtime mounts the real home read-write, measured). The
+   container starts in the host's current directory when it is visible inside, else in `$HOME`.
+7. `--dry-run` and `--print-binds` validate everything but create nothing.
 
 ## 6. Writable paths
 
-`--write PATH` (repeatable) mounts an existing directory read-write at its own path, nested inside
-its read-only parent. The wrapper refuses a target that:
+`--write PATH` (repeatable) mounts an existing directory read-write at the path as typed (symlinks
+are resolved for the source, not the destination, so `~/proj -> /dcs04/...` appears at `~/proj`).
+The wrapper refuses a target that:
 
 - does not exist (no runtime-created mount points on host storage; measured to happen otherwise),
 - is `/`, or lies under `/usr /etc /opt /var /boot /proc /sys /dev /run /jhpce/shared`,
-- overlaps the real home (the synthetic home occupies that path),
-- equals or contains a read-only mount source (`--write /dcs04/lieber`, `--write /dcs04`),
-- is the root of a whole filesystem (`--write /fastscratch/myscratch`),
+- is the real home or an ancestor of it (use `--home-mode real-rw` deliberately instead);
+  directories *inside* the real home are allowed,
+- equals a read-only mount source (`--write /dcs04/lieber`) or contains one at a different path,
+- is the root of a whole filesystem (`--write /fastscratch/myscratch`, `--write /dcs04`),
 - sits on an autofs map or has filesystems mounted below it.
 
-The list of writable paths is printed at startup, recorded in the launch log, and exported inside
-as `LIBD_AI_SANDBOX_RW` (colon-separated) so the agent can be told where it may write.
-
-The earlier `/agent_out` and `/payload` aliases are dropped: same-path `--write`/`--read` keep paths
-identical to the host, which is what scripts, notebooks and agents expect.
+Writable paths are printed at startup, recorded in the launch log, and exported inside as
+`LIBD_AI_SANDBOX_RW` (colon-separated).
 
 ## 7. Escape routes to unsandboxed writes
 
@@ -137,73 +144,111 @@ identical to the host, which is what scripts, notebooks and agents expect.
   `sbatch srun salloc scancel scontrol sbcast strigger scrontab ssh scp sftp slogin`. Each is
   masked by a read-only bind of `libexec/deny`, which prints a message and exits 126.
 - `/run` is the skeleton's empty directory, so `/run/munge` is absent and no Slurm client can
-  authenticate even if run from another path. `squeue`/`sinfo` simply fail.
-- No ssh keys exist in the synthetic home; setuid binaries (`sudo`, `su`, `ssh-keysign`) are
-  inert because the container is mounted `nosuid`.
+  authenticate even if run from another path.
+- No ssh keys in the synthetic home; setuid binaries (`sudo`, `su`, `ssh-keysign`) are inert
+  because the container is mounted `nosuid`.
 - `rsync` stays available for local copies; remote rsync needs `ssh`, which is masked.
-- A controlled re-entry wrapper (`libd-ai-sbatch`, a job that re-launches the same sandbox) is
-  future work.
+- In `--home-mode real-rw` the agent can edit dotfiles (`~/.bashrc`, `~/.ssh/authorized_keys`)
+  that *host* sessions later execute. That is an escape route by delay; it is why `real-rw` is
+  opt-in and announced with a warning.
+- A controlled re-entry wrapper (`libd-ai-sbatch`) is future work.
 
-## 8. Synthetic home
+## 8. Home
 
-- `$MYSCRATCH/ai-sandbox/home`, mounted at the real `$HOME` path, persistent across runs;
-  `--reset-home` archives it as `home.<timestamp>`.
-- First run creates `.bashrc` (sources `/etc/bashrc`, sets a `[sbx ...]` prompt and
-  `EDITOR=nano`), `.bash_profile` (sources `.bashrc`), `.cache/`, `.config/`, `.local/bin/`, `R/`.
+### 8.1 Home modes (`--home-mode`, or `LIBD_AI_SANDBOX_HOME_MODE`)
+
+| Mode | `$HOME` inside | Use |
+|---|---|---|
+| `synthetic` (default) | separate sandbox home, rw | normal use; agent logins, history, configs persist without touching the real home |
+| `real-ro` | real home, **read-only** (nested mounts rebound ro) | inspect with your own dotfiles, scripts and R libraries; tools that must write to `~` fail |
+| `real-rw` | real home, **writable** | user accepts the risk; data normally is not in `$HOME`, but dotfiles are (§7) |
+
+In `synthetic` mode, `--read ~/scripts` or `--write ~/proj` expose individual real-home
+directories at their usual path inside the synthetic home.
+
+### 8.2 Synthetic home
+
+- Location: `~/.libd-ai-sandbox/home` (durable, backed-up home storage), overridable with
+  `LIBD_AI_SANDBOX_HOME` (e.g. a lab directory). Launch logs: `~/.libd-ai-sandbox/logs/`.
+  Earlier versions used `$MYSCRATCH/ai-sandbox/home`, which fastscratch purging could delete;
+  the wrapper points at it if found.
+- The location is validated like a `--write` target (not the real home or its ancestor, not a
+  system path, not a whole ro mount) and created on first launch.
+- First launch: files from the user's skel directory (§9) are copied in without overwriting;
+  then `.bashrc` (sources `/etc/bashrc`, `[sbx ...]` prompt, `EDITOR=nano`, commented
+  `module load` example, header naming its host path), `.bash_profile`, `.config/`,
+  `.local/bin/`, `R/` are created if still missing.
 - **Customizing the session.** Every session is a login shell: the JHPCE site profile runs first
-  (default modules), then the synthetic `~/.bashrc`. That file is the place for `module load`
-  lines, aliases and variables. It lives at `$MYSCRATCH/ai-sandbox/home/.bashrc` on the host and
-  at `~/.bashrc` inside; edit it from either side (`nano` is available inside). The wrapper writes
-  it only when missing and never overwrites it. Avoid `set -u` before `module` commands.
-- The user's umask is inherited, not forced to 077: files written into shared lab directories via
-  `--write` must stay group-readable.
-- Agent configuration (Codex `auth.json`/`config.toml`, Claude `.credentials.json`/`settings.json`,
-  `.claude.json`) will be copied in by default for the selected agent (phase 4). These confer no
-  write capability on JHPCE storage. `.ssh`, `.aws`, `.netrc`, `.git-credentials` are never copied.
-- Personal R libraries in the real `~/R/<ver>` are not visible. Exposing them read-only is an
-  open question (§12).
+  (default modules), then `~/.bashrc`. Put `module load` lines, aliases and variables there. Edit
+  from the host or inside (`nano ~/.bashrc`); apply in a running session with `source ~/.bashrc`.
+  The wrapper never overwrites it. Avoid `set -u` before `module` commands.
+- `--reset-home` archives the home as `home.<timestamp>`; the next launch rebuilds it from skel.
+- The user's umask is inherited (files written into shared lab directories stay group-readable).
+- Agent configuration (Codex, Claude) will be copied in for the selected agent (phase 4). `.ssh`,
+  `.aws`, `.netrc`, `.git-credentials` are never copied.
 
-## 9. Agents
+## 9. Configuration layers
 
-`--agent shell` is implemented. `codex` and `claude` are planned (phase 11). Because the container
-is the safety boundary, their own permission prompts can be relaxed inside it
+| Layer | Who | Location | Content |
+|---|---|---|---|
+| Site | module maintainers | `$LIBD_AI_SANDBOX_ROOT/etc/` | `mounts.tsv` (ro mounts), `deny-commands.txt` |
+| User | each user | `~/.config/libd-ai-sandbox/` (`LIBD_AI_SANDBOX_CONFIG_DIR`) | `mounts.tsv` (extra ro mounts, same rules), `skel/` (durable home template) |
+| Environment | user, per shell | `LIBD_AI_SANDBOX_*` | home location and mode, runtime, extra mounts file, rootfs |
+| Command line | user, per run | options | `--write`, `--read`, `--home-mode`, `--no-scratch`, ... |
+
+No layer below the command line can make anything writable.
+
+### 9.1 Candidate customizations for a shared module (not implemented)
+
+- **Config file** `~/.config/libd-ai-sandbox/config` with defaults for `home_mode`, `scratch`,
+  `agent`, and named **profiles** (`--profile spatial` = a set of `--read`/`--write` paths and
+  modules), parsed as `key = value`, never sourced. Default `--write` paths would be allowed only
+  inside profiles, so writable paths stay explicit per run.
+- **Carry host modules**: `--keep-modules` reloads `$LOADEDMODULES` inside.
+- **Real-home dotfile pass-through** in synthetic mode: an allow-list (e.g. `.Rprofile`,
+  `.gitconfig`, `.condarc`) copied or bound read-only into the synthetic home.
+- **Personal R/Python libraries read-only** in synthetic mode (`~/R/<ver>`, `~/.local/lib/python*`)
+  so installed packages work while new installs go to the synthetic home.
+- **Site policy knobs** for maintainers: forbid `real-rw`, cap `--write` to an allow-list of
+  roots (e.g. only `*/agent_outputs/*`), or require a reason string recorded in the log.
+- **Agent defaults**: per-user default agent and flags; per-project `AGENTS.md` injection.
+- **`libd-ai-sbatch`**: submit a job that re-enters the same sandbox with the same binds.
+
+## 10. Agents
+
+`--agent shell` is implemented. `codex` and `claude` are planned. Because the container is the
+safety boundary, their own permission prompts can be relaxed inside it
 (`claude --dangerously-skip-permissions`, Codex full-access mode). They will be told where they
 are via generated `~/.codex/AGENTS.md` / `~/.claude/CLAUDE.md` naming the writable paths.
 
-## 10. Wrapper (`bin/libd-ai-sandbox`, implemented)
+## 11. Wrapper and module
 
 ```text
---write PATH        rw at same path (repeatable)
---read PATH         ro at same path (repeatable)
+--write PATH        rw at the path as typed (repeatable)
+--read PATH         ro at the path as typed (repeatable)
 --no-scratch        do not mount $MYSCRATCH rw
+--home-mode MODE    synthetic | real-ro | real-rw
 --cmd STRING        bash -lc STRING
 -- CMD ARGS...      run CMD in a login environment
 --agent shell       (codex|claude planned)
 --reset-home        archive and recreate the synthetic home
---dry-run           print bind table and runtime command
+--dry-run           print bind table and runtime command; creates nothing
 --print-binds       print bind table
 --quiet
 ```
 
-Configuration by environment: `LIBD_AI_SANDBOX_RUNTIME`, `LIBD_AI_SANDBOX_MOUNTS`,
-`LIBD_AI_SANDBOX_MOUNTS_EXTRA`, `LIBD_AI_SANDBOX_ROOTFS`, `LIBD_AI_SANDBOX_DENY`.
+Each launch writes `~/.libd-ai-sandbox/logs/<timestamp>-<pid>.json`: time, user, host, Slurm job
+id, wrapper and runtime versions, host OS, rootfs, mounts files, home mode, writable paths, bind
+table with notes, full command. Logs are a record, not tamper-proof evidence.
 
-Each launch writes `$MYSCRATCH/ai-sandbox/logs/<timestamp>-<pid>.json`: time, user, host, Slurm
-job id, wrapper and runtime versions, host OS, rootfs, mounts files, writable paths, bind table,
-full command. The log lives in writable scratch, so it is a record, not tamper-proof evidence.
-
-## 11. Lua module
-
-`modulefiles/libd_ai_sandbox/0.1.lua` (development): derives its root from its own location,
+`modulefiles/libd_ai_sandbox/0.1.lua` (development) derives its root from its own location,
 prepends `bin` to `PATH`, sets `LIBD_AI_SANDBOX_ROOT` and `LIBD_AI_SANDBOX_RUNTIME`, and guards
-against an unset `HOSTNAME`. For deployment the root becomes an explicit
-`/jhpce/shared/libd/core/libd_ai_sandbox/<ver>` path in `jhpce_module_config`.
+against an unset `HOSTNAME`.
 
 ## 12. Open questions
 
-- Which lab exports beyond `*/lieber` belong in the default mounts file?
-- Expose the real `~/R/<ver>` and `~/.local` read-only so personal packages work?
-- Carry the host shell's loaded modules into the session?
+- Which lab exports beyond `*/lieber` belong in the default site mounts file?
+- Which of §9.1 to implement before sharing the module?
 - Validate the host-root container under SingularityCE 4.5.1 `--userns` as a fallback.
 - Does Codex's own Landlock sandbox work inside the container?
 - Where should agent CLIs live: per-user installs or `/jhpce/shared/libd`?
