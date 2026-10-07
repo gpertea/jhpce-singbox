@@ -45,7 +45,7 @@ expect_refusal "--write system path"              "system/shared path"    -- --w
 expect_refusal "--write under /jhpce/shared"      "system/shared path"    -- --write /jhpce/shared/libd
 expect_refusal "--write real home"                "real home"             -- --write "$REAL_HOME"
 expect_refusal "--read real home (synthetic mode)" "real-ro"              -- --read "$REAL_HOME"
-expect_refusal "--write autofs parent of a ro mount" "entire filesystem" -- --write /dcs04
+expect_refusal "--write autofs parent of a ro mount" "refusing --write /dcs04" -- --write /dcs04
 expect_refusal "--write whole scratch filesystem" "entire filesystem"     -- --write /fastscratch/myscratch
 expect_refusal "bad --home-mode"                  "--home-mode must be"   -- --home-mode bogus
 LIBD_AI_SANDBOX_HOME=/dcs04/lieber expect_refusal "synthetic home = whole ro export" "whole read-only mount" --
@@ -55,6 +55,14 @@ LIBD_AI_SANDBOX_MOUNTS_EXTRA=$T/bad.tsv expect_refusal "rw entry in mounts file"
 printf '/dcs05 /dcs05 ro no\n' > "$T/bad.tsv"
 LIBD_AI_SANDBOX_MOUNTS_EXTRA=$T/bad.tsv expect_refusal "autofs root in mounts file" "autofs map" --
 
+mkdir -p "$T/config/profiles"
+printf 'write = /tmp\n' > "$T/config/config"
+expect_refusal "write in config file"            "only allowed in profiles" --
+unlink "$T/config/config"
+printf 'colour = blue\n' > "$T/config/profiles/badkey.conf"
+expect_refusal "unknown key in profile"          "unknown key"           -- --profile badkey
+expect_refusal "missing profile"                 "not found"             -- --profile nosuchprofile
+expect_refusal "invalid module name"             "invalid module name"   -- --module 'x;true'
 out=$("$SBX" --dry-run --write "$WT" 2>&1) && [[ "$out" == *"rw   $WT"* ]] && ok "dry-run lists --write target" || bad "dry-run :: $out"
 [ ! -e "$T/home" ] && [ ! -e "$T/state" ] && ok "dry-run creates nothing" || bad "dry-run created files"
 out=$("$SBX" --dry-run --home-mode real-rw 2>&1) && [[ "$out" == *"[REAL home, writable]"* ]] && ok "real-rw shown in bind table" || bad "real-rw dry-run :: $out"
@@ -133,6 +141,39 @@ fi
 [[ "$(get R)" == /jhpce/shared/community/core/conda_R/* ]] && ok "module load conda_R/4.5.x" || bad "conda_R :: $(get R)"
 [ "$(get se_load)" = ok ] && ok "SummarizedExperiment loads" || bad "SummarizedExperiment"
 ls "$T"/state/logs/*.json >/dev/null 2>&1 && ok "launch log written to state dir" || bad "no launch log"
+
+echo "== live: profile + personal libraries"
+mkdir -p "$T/prof_out"
+cat > "$T/config/profiles/t.conf" <<PROF
+description = test profile
+module = conda_R/4.5.x
+write = $T/prof_out
+PROF
+OUT=$("$SBX" --quiet --profile t --cmd '
+r() { printf "%s\t%s\n" "$1" "$2"; }
+r rw "$LIBD_AI_SANDBOX_RW"
+r preloaded "$(command -v R)"
+Rscript -e "cat(.libPaths(), sep=\"\n\")" 2>/dev/null > /tmp/libpaths.'"$TAG"'
+r lib1 "$(sed -n 1p /tmp/libpaths.'"$TAG"')"
+r lib2 "$(sed -n 2p /tmp/libpaths.'"$TAG"')"
+r pypath "$(/usr/bin/python3 -c "import sys; print(\":\".join(sys.path))")"
+echo x > /host_home/R/'"$TAG"' 2>/dev/null && r hostlib_write LEAK || r hostlib_write blocked' 2>&1)
+[[ "$(get rw)" == *"$T/prof_out"* ]] && ok "profile write path applied" || bad "profile write :: $OUT"
+[[ "$(get preloaded)" == /jhpce/shared/community/core/conda_R/* ]] && ok "profile module preloaded" || bad "profile module :: $(get preloaded)"
+if [ -d "$REAL_HOME/R" ]; then
+    [ "$(get lib1)" = "$REAL_HOME/R/4.5.x" ] && ok "R: writable sandbox library first" || bad "R lib1 :: $(get lib1)"
+    if [ -d "$REAL_HOME/R/4.5.x" ]; then
+        [ "$(get lib2)" = /host_home/R/4.5.x ] && ok "R: real personal library second (read-only)" || bad "R lib2 :: $(get lib2)"
+    fi
+    [ "$(get hostlib_write)" = blocked ] && [ ! -e "$REAL_HOME/R/$TAG" ] && ok "personal R libs not writable" || bad "personal R libs WRITABLE"
+fi
+pyv=$(/usr/bin/python3 -c 'import sys; print("python%d.%d" % sys.version_info[:2])')
+if [ -d "$REAL_HOME/.local/lib/$pyv/site-packages" ]; then
+    [[ "$(get pypath)" == *"$REAL_HOME/.local/lib/$pyv/site-packages:/host_home/.local/lib/$pyv/site-packages"* ]] \
+        && ok "Python: real user site appended after sandbox user site" || bad "python path :: $(get pypath)"
+fi
+OUT=$("$SBX" --quiet --no-personal-libs --cmd 'r() { printf "%s\t%s\n" "$1" "$2"; }; [ -e /host_home ] && r hosthome yes || r hosthome no' 2>&1)
+[ "$(get hosthome)" = no ] && ok "--no-personal-libs hides /host_home" || bad "--no-personal-libs :: $OUT"
 
 echo "== live: --home-mode real-ro"
 OUT=$("$SBX" --quiet --home-mode real-ro -- bash -c '

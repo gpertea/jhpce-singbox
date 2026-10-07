@@ -9,7 +9,7 @@
 set -euo pipefail
 
 PROG=libd-ai-sandbox
-VERSION=0.2.0-dev
+VERSION=0.3.0-dev
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 ROOT=${LIBD_AI_SANDBOX_ROOT:-$(dirname "$(dirname "$SELF")")}
 RUNTIME=${LIBD_AI_SANDBOX_RUNTIME:-/jhpce/shared/jhpce/core/singularity/3.11.4/bin/singularity}
@@ -26,7 +26,11 @@ SKEL=$CONFIG_DIR/skel
 STATE=${LIBD_AI_SANDBOX_STATE:-$REAL_HOME/.libd-ai-sandbox}
 SBX_HOME=${LIBD_AI_SANDBOX_HOME:-$STATE/home}
 SBX_LOGS=$STATE/logs
-HOME_MODE=${LIBD_AI_SANDBOX_HOME_MODE:-synthetic}
+USER_CONFIG=$CONFIG_DIR/config
+USER_PROFILES=$CONFIG_DIR/profiles
+SITE_PROFILES=$ROOT/etc/profiles
+R_HOOK=$ROOT/share/R/sandbox-Rprofile.R
+HOST_HOME_DIR=/host_home      # read-only pieces of the real home, inside the container
 
 # Host paths that may never be made writable.
 PROTECTED_PREFIXES=(/usr /etc /opt /var /boot /proc /sys /dev /run /jhpce/shared)
@@ -45,6 +49,13 @@ Options:
                     a system path, or contain other mounted filesystems
   --read PATH       add PATH read-only at the same path (repeatable)
   --no-scratch      do not mount \$MYSCRATCH writable
+  --profile NAME    apply a saved profile (repeatable; see below)
+  --list-profiles   list available profiles and exit
+  --module NAME     module to load at session start (repeatable)
+  --no-personal-libs
+                    synthetic home only: do not expose your real ~/R and
+                    ~/.local/lib read-only (default: exposed at $HOST_HOME_DIR and
+                    added after the writable sandbox libraries)
   --home-mode MODE  synthetic (default): \$HOME is a separate sandbox home
                     real-ro: \$HOME is your real home, read-only
                     real-rw: \$HOME is your real home, WRITABLE (at your own risk:
@@ -68,6 +79,15 @@ Per-user customization ($CONFIG_DIR):
   mounts.tsv   extra read-only mounts, same format as the site mounts file
   skel/        files copied into the synthetic home when missing there
                (e.g. skel/.bashrc as your durable template)
+  config       defaults, 'key = value' lines: home_mode, scratch, personal_libs,
+               agent, module, read  (not write: writable paths need a profile
+               or the command line)
+  profiles/NAME.conf
+               same keys plus 'write' and 'description'; used with --profile NAME.
+               Site profiles: $SITE_PROFILES/NAME.conf
+  Values may use ~, \$HOME, \$USER, \$MYSCRATCH. Lists (module, read, write)
+  accumulate; for single values the last one wins, in the order: config,
+  environment, profiles, command line.
 
 Environment:
   LIBD_AI_SANDBOX_HOME          synthetic home location [$SBX_HOME]
@@ -84,20 +104,28 @@ die()  { echo "$PROG: error: $*" >&2; exit 2; }
 warn() { [ "$QUIET" = 1 ] || echo "$PROG: warning: $*" >&2; }
 
 # ---------------------------------------------------------------- options --
-WRITE_REQ=(); READ_REQ=(); CMD_STR=""; AGENT=shell; SCRATCH_RW=1
-DRY_RUN=0; PRINT_BINDS=0; QUIET=0; RESET_HOME=0; ARGV=()
+WRITE_REQ=(); READ_REQ=(); MODULES=(); CLI_MODULES=(); PROFILES=(); CMD_STR=""; ARGV=()
+CLI_HOME_MODE=""; CLI_SCRATCH=""; CLI_PERSONAL=""; CLI_AGENT=""
+DRY_RUN=0; PRINT_BINDS=0; QUIET=0; RESET_HOME=0; LIST_PROFILES=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --write)        [ $# -ge 2 ] || die "--write needs a path"; WRITE_REQ+=("$2"); shift 2 ;;
         --write=*)      WRITE_REQ+=("${1#*=}"); shift ;;
         --read)         [ $# -ge 2 ] || die "--read needs a path"; READ_REQ+=("$2"); shift 2 ;;
         --read=*)       READ_REQ+=("${1#*=}"); shift ;;
-        --no-scratch)   SCRATCH_RW=0; shift ;;
-        --home-mode)    [ $# -ge 2 ] || die "--home-mode needs a value"; HOME_MODE=$2; shift 2 ;;
-        --home-mode=*)  HOME_MODE=${1#*=}; shift ;;
+        --no-scratch)   CLI_SCRATCH=no; shift ;;
+        --profile)      [ $# -ge 2 ] || die "--profile needs a name"; PROFILES+=("$2"); shift 2 ;;
+        --profile=*)    PROFILES+=("${1#*=}"); shift ;;
+        --list-profiles) LIST_PROFILES=1; shift ;;
+        --module)       [ $# -ge 2 ] || die "--module needs a name"; CLI_MODULES+=("$2"); shift 2 ;;
+        --module=*)     CLI_MODULES+=("${1#*=}"); shift ;;
+        --no-personal-libs) CLI_PERSONAL=no; shift ;;
+        --personal-libs) CLI_PERSONAL=yes; shift ;;
+        --home-mode)    [ $# -ge 2 ] || die "--home-mode needs a value"; CLI_HOME_MODE=$2; shift 2 ;;
+        --home-mode=*)  CLI_HOME_MODE=${1#*=}; shift ;;
         --cmd)          [ $# -ge 2 ] || die "--cmd needs a string"; CMD_STR=$2; shift 2 ;;
-        --agent)        [ $# -ge 2 ] || die "--agent needs a name"; AGENT=$2; shift 2 ;;
-        --agent=*)      AGENT=${1#*=}; shift ;;
+        --agent)        [ $# -ge 2 ] || die "--agent needs a name"; CLI_AGENT=$2; shift 2 ;;
+        --agent=*)      CLI_AGENT=${1#*=}; shift ;;
         --reset-home)   RESET_HOME=1; shift ;;
         --dry-run)      DRY_RUN=1; shift ;;
         --print-binds)  PRINT_BINDS=1; shift ;;
@@ -109,6 +137,78 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ -z "$CMD_STR" ] || [ ${#ARGV[@]} -eq 0 ] || die "use either --cmd or '-- command', not both"
+
+# ------------------------------------------------- config and profiles ------
+# Files are parsed, never sourced. Only the listed keys are accepted.
+HOME_MODE=synthetic; SCRATCH_RW=1; PERSONAL_LIBS=1; AGENT=shell
+PROFILE_FILES=()
+expand_value() {   # ~, $HOME, $USER, $MYSCRATCH; nothing else is interpreted
+    local v=$1
+    case "$v" in "~") v=$REAL_HOME ;; "~/"*) v=$REAL_HOME/${v#\~/} ;; esac
+    v=${v//\$\{HOME\}/$REAL_HOME}; v=${v//\$HOME/$REAL_HOME}
+    v=${v//\$\{USER\}/$(id -un)}; v=${v//\$USER/$(id -un)}
+    v=${v//\$\{MYSCRATCH\}/${MYSCRATCH:-}}; v=${v//\$MYSCRATCH/${MYSCRATCH:-}}
+    printf '%s' "$v"
+}
+yesno() { case "$1" in yes|true|1) echo 1 ;; no|false|0) echo 0 ;; *) return 1 ;; esac; }
+apply_conf() {   # FILE KIND(config|profile)
+    local file=$1 kind=$2 line key val n=0 b
+    while IFS= read -r line || [ -n "$line" ]; do
+        n=$((n+1))
+        line=${line%%#*}
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        [[ "$line" =~ ^[[:space:]]*([a-z_]+)[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*$ ]] ||
+            die "$file:$n: expected 'key = value'"
+        key=${BASH_REMATCH[1]}; val=$(expand_value "${BASH_REMATCH[2]}")
+        case "$key" in
+            home_mode)     HOME_MODE=$val ;;
+            scratch)       b=$(yesno "$val") || die "$file:$n: scratch must be yes or no"; SCRATCH_RW=$b ;;
+            personal_libs) b=$(yesno "$val") || die "$file:$n: personal_libs must be yes or no"; PERSONAL_LIBS=$b ;;
+            agent)         AGENT=$val ;;
+            module)        MODULES+=("$val") ;;
+            read)          [[ "$val" == /* ]] || die "$file:$n: read path must be absolute"; READ_REQ+=("$val") ;;
+            write)         [ "$kind" = profile ] ||
+                               die "$file:$n: 'write' is only allowed in profiles (writable paths must be chosen per run)"
+                           [[ "$val" == /* ]] || die "$file:$n: write path must be absolute"; WRITE_REQ+=("$val") ;;
+            description)   [ "$kind" = profile ] || die "$file:$n: unknown key '$key'" ;;
+            *)             die "$file:$n: unknown key '$key'" ;;
+        esac
+    done < "$file"
+}
+find_profile() {   # user profile wins over a site profile of the same name
+    local name=$1
+    [[ "$name" =~ ^[A-Za-z0-9_.-]+$ ]] || die "invalid profile name '$name'"
+    if [ -f "$USER_PROFILES/$name.conf" ]; then echo "$USER_PROFILES/$name.conf"
+    elif [ -f "$SITE_PROFILES/$name.conf" ]; then echo "$SITE_PROFILES/$name.conf"
+    else die "profile '$name' not found in $USER_PROFILES or $SITE_PROFILES"; fi
+}
+if [ "$LIST_PROFILES" = 1 ]; then
+    for dir in "$USER_PROFILES" "$SITE_PROFILES"; do
+        [ -d "$dir" ] || continue
+        for f in "$dir"/*.conf; do
+            [ -f "$f" ] || continue
+            d=$(sed -n 's/^[[:space:]]*description[[:space:]]*=[[:space:]]*//p' "$f" | head -1)
+            printf '%-20s %-6s %s\n' "$(basename "$f" .conf)" "$([ "$dir" = "$USER_PROFILES" ] && echo user || echo site)" "$d"
+        done
+    done
+    exit 0
+fi
+CLI_READ=("${READ_REQ[@]}"); CLI_WRITE=("${WRITE_REQ[@]}"); READ_REQ=(); WRITE_REQ=()
+[ -f "$USER_CONFIG" ] && apply_conf "$USER_CONFIG" config
+[ -n "${LIBD_AI_SANDBOX_HOME_MODE:-}" ] && HOME_MODE=$LIBD_AI_SANDBOX_HOME_MODE
+for pr in "${PROFILES[@]}"; do
+    f=$(find_profile "$pr"); PROFILE_FILES+=("$f")
+    apply_conf "$f" profile
+done
+[ -n "$CLI_HOME_MODE" ] && HOME_MODE=$CLI_HOME_MODE
+[ -n "$CLI_SCRATCH" ] && SCRATCH_RW=$(yesno "$CLI_SCRATCH")
+[ -n "$CLI_PERSONAL" ] && PERSONAL_LIBS=$(yesno "$CLI_PERSONAL")
+[ -n "$CLI_AGENT" ] && AGENT=$CLI_AGENT
+READ_REQ+=("${CLI_READ[@]}"); WRITE_REQ+=("${CLI_WRITE[@]}"); MODULES+=("${CLI_MODULES[@]}")
+for m in "${MODULES[@]}"; do
+    [[ "$m" =~ ^[A-Za-z0-9_.+/-]+$ ]] || die "invalid module name '$m'"
+done
+
 case "$AGENT" in
     shell) ;;
     codex|claude) die "--agent $AGENT is planned but not implemented yet; use --agent shell" ;;
@@ -283,6 +383,21 @@ case "$HOME_MODE" in
         ;;
 esac
 
+# Personal R and Python libraries of the real home, read-only, for synthetic mode.
+PERSONAL_R=""; PERSONAL_PY=""
+if [ "$HOME_MODE" = synthetic ] && [ "$PERSONAL_LIBS" = 1 ]; then
+    if [ -d "$REAL_HOME/R" ]; then
+        PERSONAL_R=$(readlink -f "$REAL_HOME/R")
+        RO_PLAN+=("$PERSONAL_R"$'\t'"$HOST_HOME_DIR/R"$'\t'"personal R libs")
+        [ -f "$R_HOOK" ] || die "R profile hook missing: $R_HOOK"
+        RO_PLAN+=("$R_HOOK"$'\t'"/.libd-ai-sandbox/Rprofile.R"$'\t'"R hook")
+    fi
+    if [ -d "$REAL_HOME/.local/lib" ]; then
+        PERSONAL_PY=$(readlink -f "$REAL_HOME/.local/lib")
+        RO_PLAN+=("$PERSONAL_PY"$'\t'"$HOST_HOME_DIR/.local/lib"$'\t'"personal Python libs")
+    fi
+fi
+
 load_mount_table   # after all automount triggers
 
 for row in "${RO_PLAN[@]}"; do
@@ -396,13 +511,24 @@ for i in "${!BIND_DST[@]}"; do
     fi
 done
 
-if [ -n "$CMD_STR" ]; then
-    INNER=(bash -lc "$CMD_STR")
-elif [ ${#ARGV[@]} -gt 0 ]; then
-    INNER=(bash -lc 'exec "$@"' "$PROG" "${ARGV[@]}")
-else
-    INNER=(bash -l)
+# Modules are loaded after the login profile and before the command. For an
+# interactive session the login shell then execs an interactive shell, which
+# inherits the loaded modules.
+PRELUDE=""
+if [ ${#MODULES[@]} -gt 0 ]; then
+    PRELUDE="module load ${MODULES[*]} || echo '$PROG: some modules failed to load' >&2"
 fi
+if [ -z "$PRELUDE" ]; then
+    if [ -n "$CMD_STR" ]; then INNER=(bash -lc "$CMD_STR")
+    elif [ ${#ARGV[@]} -gt 0 ]; then INNER=(bash -lc 'exec "$@"' "$PROG" "${ARGV[@]}")
+    else INNER=(bash -l); fi
+else
+    if [ -n "$CMD_STR" ]; then INNER=(bash -lc "$PRELUDE"$'\n'"$CMD_STR")
+    elif [ ${#ARGV[@]} -gt 0 ]; then INNER=(bash -lc "$PRELUDE"$'\n''exec "$@"' "$PROG" "${ARGV[@]}")
+    else INNER=(bash -lc "$PRELUDE"$'\n''exec bash -i'); fi
+fi
+EXTRA_ENV=()
+[ -n "$PERSONAL_R" ] && EXTRA_ENV+=(--env "R_PROFILE_USER=/.libd-ai-sandbox/Rprofile.R")
 
 CMD=("$RUNTIME" exec
      --contain --cleanenv --no-mount cwd
@@ -414,6 +540,7 @@ CMD=("$RUNTIME" exec
      --env "LIBD_AI_SANDBOX=$VERSION"
      --env "LIBD_AI_SANDBOX_HOME_MODE=$HOME_MODE"
      --env "LIBD_AI_SANDBOX_RW=$RW_LIST"
+     "${EXTRA_ENV[@]}"
      "${BIND_ARGS[@]}"
      "$ROOTFS"
      "${INNER[@]}")
@@ -460,6 +587,9 @@ write_log() {
         printf '  "mounts_files": %s,\n' "$(json_arr "${MOUNT_FILES[@]}")"
         printf '  "agent": %s,\n' "$(json_str "$AGENT")"
         printf '  "home_mode": %s,\n' "$(json_str "$HOME_MODE")"
+        printf '  "profiles": %s,\n' "$(json_arr "${PROFILE_FILES[@]}")"
+        printf '  "modules": %s,\n' "$(json_arr "${MODULES[@]}")"
+        printf '  "personal_libs": %s,\n' "$([ -n "$PERSONAL_R$PERSONAL_PY" ] && echo true || echo false)"
         printf '  "writable": %s,\n' "$(json_arr "${WRITABLE[@]}" "$SBX_WORK")"
         printf '  "host_cwd": %s,\n' "$(json_str "$HOST_PWD")"
         printf '  "binds": ['
@@ -498,6 +628,17 @@ init_synthetic_home() {
     # Durable per-user template first, so it wins over the built-in defaults.
     [ -d "$SKEL" ] && cp -a --no-clobber "$SKEL/." "$SBX_HOME/"
     mkdir -p "$SBX_HOME"/{.config,.local/bin,R}
+    # Python: a .pth file in each per-version user site of the synthetic home
+    # appends the real home's matching user site (read-only) to sys.path.
+    if [ -n "$PERSONAL_PY" ]; then
+        local sp v
+        for sp in "$PERSONAL_PY"/python*/site-packages; do
+            [ -d "$sp" ] || continue
+            v=$(basename "$(dirname "$sp")")
+            mkdir -p "$SBX_HOME/.local/lib/$v/site-packages"
+            echo "$HOST_HOME_DIR/.local/lib/$v/site-packages" > "$SBX_HOME/.local/lib/$v/site-packages/libd-ai-sandbox-host.pth"
+        done
+    fi
     if [ ! -e "$SBX_HOME/.bashrc" ]; then
         {
             echo "# ~/.bashrc of the libd-ai-sandbox synthetic home (not your real home)."

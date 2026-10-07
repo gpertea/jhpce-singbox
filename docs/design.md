@@ -1,4 +1,4 @@
-# libd-ai-sandbox: Design (revision 4, 2026-10-07)
+# libd-ai-sandbox: Design (revision 5, 2026-10-07)
 
 Supersedes `docs/initial/project_details.md`. Measured facts behind the choices here are in
 `docs/runtime_findings.md`.
@@ -184,6 +184,15 @@ directories at their usual path inside the synthetic home.
   The wrapper never overwrites it. Avoid `set -u` before `module` commands.
 - `--reset-home` archives the home as `home.<timestamp>`; the next launch rebuilds it from skel.
 - The user's umask is inherited (files written into shared lab directories stay group-readable).
+- **Personal libraries, read-only** (default on; `--no-personal-libs` or `personal_libs = no`).
+  The real `~/R` is mounted read-only at `/host_home/R` and `~/.local/lib` at
+  `/host_home/.local/lib`. R: `R_PROFILE_USER` points at `share/R/sandbox-Rprofile.R`, which runs
+  after the site `Rprofile.site` (which creates and puts the writable sandbox library
+  `~/R/<conda_R version>` first), inserts the matching real libraries
+  (`/host_home/R/<version>`, `/host_home/R/<platform>-library/<x.y>`) right after it, then sources
+  the synthetic `~/.Rprofile`. Python: for each `pythonX.Y/site-packages` in the real home, a
+  `libd-ai-sandbox-host.pth` in the synthetic user site appends the real one. Result: installed
+  packages load; `install.packages` and `pip install --user` write to the sandbox home.
 - Agent configuration (Codex, Claude) will be copied in for the selected agent (phase 4). `.ssh`,
   `.aws`, `.netrc`, `.git-credentials` are never copied.
 
@@ -191,27 +200,56 @@ directories at their usual path inside the synthetic home.
 
 | Layer | Who | Location | Content |
 |---|---|---|---|
-| Site | module maintainers | `$LIBD_AI_SANDBOX_ROOT/etc/` | `mounts.tsv` (ro mounts), `deny-commands.txt` |
-| User | each user | `~/.config/libd-ai-sandbox/` (`LIBD_AI_SANDBOX_CONFIG_DIR`) | `mounts.tsv` (extra ro mounts, same rules), `skel/` (durable home template) |
+| Site | module maintainers | `$LIBD_AI_SANDBOX_ROOT/etc/` | `mounts.tsv`, `deny-commands.txt`, `profiles/*.conf` |
+| User | each user | `~/.config/libd-ai-sandbox/` (`LIBD_AI_SANDBOX_CONFIG_DIR`) | `mounts.tsv`, `skel/`, `config`, `profiles/*.conf` |
 | Environment | user, per shell | `LIBD_AI_SANDBOX_*` | home location and mode, runtime, extra mounts file, rootfs |
-| Command line | user, per run | options | `--write`, `--read`, `--home-mode`, `--no-scratch`, ... |
+| Command line | user, per run | options | `--profile`, `--write`, `--read`, `--module`, `--home-mode`, ... |
 
-No layer below the command line can make anything writable.
+Single values resolve in the order built-in, `config`, environment, profiles (in the order
+given), command line; the last one wins. Lists (`module`, `read`, `write`) accumulate.
 
-### 9.1 Candidate customizations for a shared module (not implemented)
+### 9.1 `config` and profiles
 
-- **Config file** `~/.config/libd-ai-sandbox/config` with defaults for `home_mode`, `scratch`,
-  `agent`, and named **profiles** (`--profile spatial` = a set of `--read`/`--write` paths and
-  modules), parsed as `key = value`, never sourced. Default `--write` paths would be allowed only
-  inside profiles, so writable paths stay explicit per run.
+Both are `key = value` files, parsed and never sourced; unknown keys abort the launch.
+
+| Key | `config` | profile | Meaning |
+|---|---|---|---|
+| `home_mode` | yes | yes | `synthetic`, `real-ro`, `real-rw` |
+| `scratch` | yes | yes | `yes`/`no`: mount `$MYSCRATCH` writable |
+| `personal_libs` | yes | yes | `yes`/`no` |
+| `agent` | yes | yes | `shell` (others planned) |
+| `module` | yes | yes | module to load at session start (repeatable) |
+| `read` | yes | yes | read-only path (repeatable) |
+| `write` | **no** | yes | writable path (repeatable) |
+| `description` | no | yes | shown by `--list-profiles` |
+
+Values may use `~`, `$HOME`, `$USER`, `$MYSCRATCH`; nothing else is expanded. `write` is refused
+in `config` so that nothing becomes writable without an explicit per-run choice (`--write` or
+`--profile`). Every profile path goes through the same validation as the command line.
+`--profile NAME` looks for `~/.config/libd-ai-sandbox/profiles/NAME.conf`, then the site
+`etc/profiles/NAME.conf`. `--list-profiles` lists both. Launch logs record the profile files and
+modules used.
+
+Example `~/.config/libd-ai-sandbox/profiles/spatial.conf`:
+
+```text
+description = spatialDLPFC metadata survey
+module = conda_R/4.5.x
+read = /dcs05/lieber/marmaypag/spatialDLPFC_LIBD4035
+write = /dcs04/lieber/lcolladotor/dbDev_LIBD001/agent_runs/spatial
+```
+
+Modules from `module`/`--module` are loaded after the login profile and before the command; an
+interactive session then continues in an interactive shell that inherits them.
+
+### 9.2 Candidate customizations (not implemented)
+
 - **Carry host modules**: `--keep-modules` reloads `$LOADEDMODULES` inside.
-- **Real-home dotfile pass-through** in synthetic mode: an allow-list (e.g. `.Rprofile`,
-  `.gitconfig`, `.condarc`) copied or bound read-only into the synthetic home.
-- **Personal R/Python libraries read-only** in synthetic mode (`~/R/<ver>`, `~/.local/lib/python*`)
-  so installed packages work while new installs go to the synthetic home.
-- **Site policy knobs** for maintainers: forbid `real-rw`, cap `--write` to an allow-list of
-  roots (e.g. only `*/agent_outputs/*`), or require a reason string recorded in the log.
-- **Agent defaults**: per-user default agent and flags; per-project `AGENTS.md` injection.
+- **Real-home dotfile pass-through** in synthetic mode: an allow-list (`.Rprofile`, `.gitconfig`,
+  `.condarc`) copied or bound read-only into the synthetic home.
+- **Site policy knobs**: forbid `real-rw`, cap `--write` to an allow-list of roots
+  (e.g. `*/agent_outputs/*`), require a reason string recorded in the log.
+- **Agent defaults** per user; per-project `AGENTS.md` injection.
 - **`libd-ai-sbatch`**: submit a job that re-enters the same sandbox with the same binds.
 
 ## 10. Agents
@@ -228,6 +266,9 @@ are via generated `~/.codex/AGENTS.md` / `~/.claude/CLAUDE.md` naming the writab
 --read PATH         ro at the path as typed (repeatable)
 --no-scratch        do not mount $MYSCRATCH rw
 --home-mode MODE    synthetic | real-ro | real-rw
+--profile NAME      apply a profile (repeatable); --list-profiles
+--module NAME       module to load at session start (repeatable)
+--no-personal-libs  do not expose real ~/R and ~/.local/lib read-only
 --cmd STRING        bash -lc STRING
 -- CMD ARGS...      run CMD in a login environment
 --agent shell       (codex|claude planned)
@@ -248,7 +289,7 @@ against an unset `HOSTNAME`.
 ## 12. Open questions
 
 - Which lab exports beyond `*/lieber` belong in the default site mounts file?
-- Which of §9.1 to implement before sharing the module?
+- Which of §9.2 to implement before sharing the module?
 - Validate the host-root container under SingularityCE 4.5.1 `--userns` as a fallback.
 - Does Codex's own Landlock sandbox work inside the container?
 - Where should agent CLIs live: per-user installs or `/jhpce/shared/libd`?
