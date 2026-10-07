@@ -56,8 +56,9 @@ user did not designate?
 6. **Scratch-backed tmp.** Always pass `--workdir`; the runtime's default `/tmp` is a 64 MB tmpfs.
 7. **Thin image, host software.** Rocky 9 plus basic userland (`which`, `hostname`, …) and Lmod;
    R/Python/Node come from the read-only `/jhpce/shared` bind.
-8. **Runtime-agnostic, SingularityCE 3.11.4 by default.** It is the only setuid install on JHPCE.
-   Apptainer 1.5.3 and SingularityCE 4.5.1 (`--userns`) are acceptable fallbacks. Call runtimes by
+8. **Runtime-agnostic, SingularityCE 3.11.4 by default.** Setuid is not needed for safety;
+   3.11.4 is preferred for speed and correct group display. SingularityCE 4.5.1 `--userns` is the
+   supported fallback; Apptainer 1.5.3 works but is slow without squashfuse. Call runtimes by
    absolute path; the modulefiles fail in non-interactive shells.
 9. **Inspectable.** `--dry-run` prints the exact command; every launch is logged with image
    sha256, bind table, user, host, command.

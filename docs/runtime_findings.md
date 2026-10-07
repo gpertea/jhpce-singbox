@@ -20,6 +20,25 @@ In non-interactive shells `HOSTNAME` is often unset and Lmod dies with a nil `st
 error. The wrapper should resolve the runtime by absolute path
 (`/jhpce/shared/jhpce/core/singularity/3.11.4/bin/singularity`) rather than `module load`.
 
+## Is setuid needed? No, not for write safety
+
+Measured 2026-10-07, same flags on all three runtimes, ro bind of `/dcs04/lieber`:
+
+| Check | SCE 3.11.4 setuid | SCE 4.5.1 `--userns` | Apptainer 1.5.3 |
+|---|---|---|---|
+| ro bind enforced (create/modify/delete) | yes | yes | yes |
+| `mount -o remount,bind,rw` inside | denied | denied | denied |
+| `unshare -rm` then remount rw, then write | denied, EROFS | denied, EROFS | denied, EROFS |
+| read a dir accessible only via a supplementary group | works | works | works |
+| supplementary group *names/ids* shown by `id`, `ls -l`, `stat` | correct | `nobody` (65534) | `nobody` (65534) |
+| startup, 45 MB image | 0.5 s | 0.7 s | 1.9 s (SIF unpacked to /tmp each run; grows with image size) |
+
+The kernel keeps the real supplementary gids for access checks and the NFS server sees them,
+so unprivileged mode loses no read access. It only loses the *display* of group ownership,
+which matters if an agent is asked to report file group ownership during a crawl.
+Read-only flags on binds made by the runtime are locked against remount from any namespace the
+agent can create.
+
 ## Containment behaviour verified with singularity/3.11.4
 
 | Check | Result |

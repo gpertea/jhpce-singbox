@@ -42,16 +42,23 @@ JHPCE ships both forks of the original Singularity:
 
 | Module | What it is | Status on JHPCE |
 |---|---|---|
-| `singularity/3.11.4` (default) | SingularityCE (Sylabs fork) | setuid install; fastest start; **default runtime** |
-| `singularity/4.5.1` | SingularityCE | non-setuid; works only with `--userns`; acceptable fallback |
+| `singularity/3.11.4` (default) | SingularityCE (Sylabs fork) | setuid install; fastest start; correct group display; **default runtime** |
+| `singularity/4.5.1` | SingularityCE | non-setuid; works only with `--userns`; groups display as `nobody`; **supported fallback** |
 | `apptainer/1.5.3` | Apptainer (Linux Foundation fork) | non-setuid; converts SIF to a sandbox in `/tmp` per launch; acceptable fallback |
 
-Naming: the documentation says "Singularity/Apptainer" or "the container runtime" generically,
-and "SingularityCE 3.11.4" when it means the default. All three accept the same `exec` flags
-and the same `src:dst:ro` bind syntax, and all three enforce read-only binds correctly, so the
-wrapper is runtime-agnostic and selects via `LIBD_AI_SANDBOX_RUNTIME` (absolute path), defaulting
-to SingularityCE 3.11.4. Environment prefixes differ (`SINGULARITY_*` vs `APPTAINER_*`); the
-wrapper passes options on the command line only and never relies on prefixed variables.
+Setuid is **not** required for the safety goal: all three runtimes enforce read-only binds,
+refuse remounts, and keep supplementary-group read access (`docs/runtime_findings.md`).
+
+Default: **SingularityCE 3.11.4**, because it is fastest and is the only mode that shows correct
+group ownership, which a metadata-crawling agent may need to report. Supported fallback:
+**SingularityCE 4.5.1 with `--userns`**, the current release; use it if 3.11.4 is retired or
+setuid is removed. Apptainer 1.5.3 works but unpacks the SIF on every launch until the site
+installs `squashfuse`.
+
+The wrapper selects the runtime via `LIBD_AI_SANDBOX_RUNTIME` (absolute path), detects whether
+the runtime is setuid (owner root and setuid bit on `libexec/*/bin/starter-suid`), and adds
+`--userns` when it is not. Docs say "Singularity/Apptainer" generically and name the runtime when
+it matters. Options go on the command line only, never via `SINGULARITY_*`/`APPTAINER_*` variables.
 
 The runtime modulefiles only load on compute/transfer nodes, so the wrapper refuses to run on a
 login node with a message pointing at `srun --pty bash`.
