@@ -148,8 +148,13 @@ identical to the host, which is what scripts, notebooks and agents expect.
 
 - `$MYSCRATCH/ai-sandbox/home`, mounted at the real `$HOME` path, persistent across runs;
   `--reset-home` archives it as `home.<timestamp>`.
-- First run creates `.bashrc` (sources `/etc/bashrc`, sets a `[sbx ...]` prompt), `.bash_profile`,
-  `.cache/`, `.config/`, `.local/bin/`, `R/`.
+- First run creates `.bashrc` (sources `/etc/bashrc`, sets a `[sbx ...]` prompt and
+  `EDITOR=nano`), `.bash_profile` (sources `.bashrc`), `.cache/`, `.config/`, `.local/bin/`, `R/`.
+- **Customizing the session.** Every session is a login shell: the JHPCE site profile runs first
+  (default modules), then the synthetic `~/.bashrc`. That file is the place for `module load`
+  lines, aliases and variables. It lives at `$MYSCRATCH/ai-sandbox/home/.bashrc` on the host and
+  at `~/.bashrc` inside; edit it from either side (`nano` is available inside). The wrapper writes
+  it only when missing and never overwrites it. Avoid `set -u` before `module` commands.
 - The user's umask is inherited, not forced to 077: files written into shared lab directories via
   `--write` must stay group-readable.
 - Agent configuration (Codex `auth.json`/`config.toml`, Claude `.credentials.json`/`settings.json`,
