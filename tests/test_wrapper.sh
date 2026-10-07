@@ -63,6 +63,10 @@ printf 'colour = blue\n' > "$T/config/profiles/badkey.conf"
 expect_refusal "unknown key in profile"          "unknown key"           -- --profile badkey
 expect_refusal "missing profile"                 "not found"             -- --profile nosuchprofile
 expect_refusal "invalid module name"             "invalid module name"   -- --module 'x;true'
+expect_refusal "--yolo without an agent"         "--yolo needs"          -- --yolo
+expect_refusal "--cmd with --agent codex"        "--cmd runs a shell"    -- --agent codex --cmd true
+expect_refusal "missing seed folder"             "seed folder not found" -- --codex-seed "$T/no_such_seed"
+expect_refusal "--seed-credentials alone"        "needs --codex-seed"    -- --seed-credentials
 out=$("$SBX" --dry-run --write "$WT" 2>&1) && [[ "$out" == *"rw   $WT"* ]] && ok "dry-run lists --write target" || bad "dry-run :: $out"
 [ ! -e "$T/home" ] && [ ! -e "$T/state" ] && ok "dry-run creates nothing" || bad "dry-run created files"
 out=$("$SBX" --dry-run --home-mode real-rw 2>&1) && [[ "$out" == *"[REAL home, writable]"* ]] && ok "real-rw shown in bind table" || bad "real-rw dry-run :: $out"
@@ -174,6 +178,50 @@ if [ -d "$REAL_HOME/.local/lib/$pyv/site-packages" ]; then
 fi
 OUT=$("$SBX" --quiet --no-personal-libs --cmd 'r() { printf "%s\t%s\n" "$1" "$2"; }; [ -e /host_home ] && r hosthome yes || r hosthome no' 2>&1)
 [ "$(get hosthome)" = no ] && ok "--no-personal-libs hides /host_home" || bad "--no-personal-libs :: $OUT"
+
+echo "== live: agent config folders and seeding (fake source folders)"
+F=$T/fake_agents
+mkdir -p "$F/.codex/skills/demo" "$F/.codex/skills/.system/x" "$F/.codex/sessions" "$F/.claude/commands"
+printf '# my codex rules\n' > "$F/.codex/AGENTS.md"
+printf 'model = "x"\n' > "$F/.codex/config.toml"
+printf 'skill\n' > "$F/.codex/skills/demo/SKILL.md"
+printf 'sys\n' > "$F/.codex/skills/.system/x/SKILL.md"
+printf 'secret session\n' > "$F/.codex/sessions/s1.jsonl"
+printf '{"auth_mode":"fake"}\n' > "$F/.codex/auth.json"
+printf '{}\n' > "$F/.claude/settings.json"
+printf 'cmd\n' > "$F/.claude/commands/c.md"
+printf '{"claudeAiOauth":{}}\n' > "$F/.claude/.credentials.json"
+printf '{"hasCompletedOnboarding":true,"oauthAccount":{"x":1},"userID":"u","projects":{"p":1}}\n' > "$F/.claude.json"
+CX=$T/home/.codex; CL=$T/home/.claude
+OUT=$("$SBX" --quiet --codex-seed "$F/.codex" --claude-seed "$F/.claude" --cmd '
+r() { printf "%s\t%s\n" "$1" "$2"; }
+r codex_home "$CODEX_HOME"; r claude_dir "$CLAUDE_CONFIG_DIR"
+r codex_bin "$(command -v codex)"; r claude_bin "$(command -v claude)"' 2>&1)
+[ "$(get codex_home)" = "$REAL_HOME/.codex" ] && [ "$(get claude_dir)" = "$REAL_HOME/.claude" ] \
+    && ok "CODEX_HOME / CLAUDE_CONFIG_DIR point at the sandbox's own folders" || bad "agent dirs :: $OUT"
+[ -f "$CX/config.toml" ] && [ -f "$CX/skills/demo/SKILL.md" ] && [ -f "$CL/settings.json" ] && [ -f "$CL/commands/c.md" ] \
+    && ok "settings seeded" || bad "settings not seeded"
+[ ! -e "$CX/auth.json" ] && [ ! -e "$CL/.credentials.json" ] && ok "credentials not seeded by default" || bad "credentials seeded without --seed-credentials"
+[ ! -e "$CX/sessions" ] && [ ! -e "$CX/skills/.system" ] && ok "sessions and agent-managed .system skills not copied" || bad "unwanted files copied"
+grep -q '^# my codex rules' "$CX/AGENTS.md" && grep -q 'libd-ai-sandbox:begin' "$CX/AGENTS.md" && grep -q 'libd-ai-sandbox:begin' "$CL/CLAUDE.md" \
+    && ok "user instructions kept, sandbox notes block added" || bad "notes block"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if sorted(d)==["hasCompletedOnboarding"] else 1)' "$CL/.claude.json" \
+    && ok ".claude.json: only onboarding settings without credentials" || bad ".claude.json keys :: $(cat "$CL/.claude.json")"
+"$SBX" --quiet --codex-seed "$F/.codex" --claude-seed "$F/.claude" --seed-credentials --cmd true >/dev/null 2>&1
+[ "$(stat -c %a "$CX/auth.json" 2>/dev/null)" = 600 ] && [ "$(stat -c %a "$CL/.credentials.json" 2>/dev/null)" = 600 ] \
+    && ok "--seed-credentials copies logins with mode 600" || bad "credential seeding"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if "oauthAccount" in d and "projects" not in d else 1)' "$CL/.claude.json" \
+    && ok ".claude.json: account added, history excluded" || bad ".claude.json account :: $(cat "$CL/.claude.json")"
+n1=$(grep -c 'libd-ai-sandbox:begin' "$CX/AGENTS.md")
+[ "$n1" = 1 ] && ok "notes block not duplicated across launches" || bad "notes block count $n1"
+if [ -n "$(get codex_bin)" ]; then
+    v=$("$SBX" --quiet --agent codex -- --version 2>/dev/null | grep -c codex-cli)
+    [ "$v" -ge 1 ] && ok "--agent codex runs the mounted CLI" || bad "--agent codex"
+else echo "  skip  codex CLI not found on PATH"; fi
+if [ -n "$(get claude_bin)" ]; then
+    v=$("$SBX" --quiet --agent claude -- --version 2>/dev/null | grep -c 'Claude Code')
+    [ "$v" -ge 1 ] && ok "--agent claude runs the mounted CLI" || bad "--agent claude"
+else echo "  skip  claude CLI not found on PATH"; fi
 
 echo "== live: --home-mode real-ro"
 OUT=$("$SBX" --quiet --home-mode real-ro -- bash -c '

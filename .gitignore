@@ -1,2 +1,3 @@
 share/rootfs/
 tests/.sbx_*
+__pycache__/

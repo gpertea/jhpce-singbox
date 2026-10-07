@@ -9,7 +9,7 @@
 set -euo pipefail
 
 PROG=libd-ai-sandbox
-VERSION=0.3.0-dev
+VERSION=0.4.0-dev
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 ROOT=${LIBD_AI_SANDBOX_ROOT:-$(dirname "$(dirname "$SELF")")}
 RUNTIME=${LIBD_AI_SANDBOX_RUNTIME:-/jhpce/shared/jhpce/core/singularity/3.11.4/bin/singularity}
@@ -31,6 +31,8 @@ USER_PROFILES=$CONFIG_DIR/profiles
 SITE_PROFILES=$ROOT/etc/profiles
 R_HOOK=$ROOT/share/R/sandbox-Rprofile.R
 HOST_HOME_DIR=/host_home      # read-only pieces of the real home, inside the container
+AGENT_MNT=/.libd-ai-sandbox/agents   # agent CLIs, read-only, inside the container
+AGENT_CONFIG_TOOL=$ROOT/libexec/agent-config
 
 # Host paths that may never be made writable.
 PROTECTED_PREFIXES=(/usr /etc /opt /var /boot /proc /sys /dev /run /jhpce/shared)
@@ -61,7 +63,20 @@ Options:
                     real-rw: \$HOME is your real home, WRITABLE (at your own risk:
                              the agent can change dotfiles your host logins run)
   --cmd STRING      run STRING with 'bash -lc' instead of an interactive shell
-  --agent NAME      shell (default); codex and claude are not implemented yet
+  --agent NAME      shell (default), codex or claude. Arguments after '--' go to
+                    the agent, e.g.  --agent codex -- login --device-auth
+  --yolo            start the agent without its own permission prompts/sandbox
+                    (codex --dangerously-bypass-approvals-and-sandbox,
+                    claude --dangerously-skip-permissions); the container still
+                    limits writes to the writable paths
+  --codex-seed DIR  copy Codex settings (config.toml, AGENTS.md, skills, ...) from
+                    DIR (e.g. ~/.codex) into the sandbox's own Codex folder
+  --claude-seed DIR copy Claude Code settings (settings.json, CLAUDE.md, commands,
+                    agents, skills, ...) from DIR (e.g. ~/.claude)
+  --seed-credentials
+                    also copy the login (auth.json / .credentials.json); the copy
+                    and the original then share one refresh token
+  --reseed          overwrite files already seeded (default: keep them)
   --reset-home      archive the synthetic home and start a fresh one
   --dry-run         print binds and the runtime command, then exit
   --print-binds     print the resolved bind table and exit
@@ -75,13 +90,21 @@ Synthetic home (--home-mode synthetic):
   'module load ...' lines there. Edit it from the host or inside (nano ~/.bashrc);
   in a running session apply changes with 'source ~/.bashrc'.
 
+Agents:
+  Each agent gets its own config folder in the sandbox (CODEX_HOME,
+  CLAUDE_CONFIG_DIR): ~/.codex and ~/.claude of the synthetic home, or
+  $STATE/agents/ with a real home. Log in once inside; the login persists.
+  Your real ~/.codex and ~/.claude are never used unless seeded from.
+  Agent CLIs are found on your PATH (or LIBD_AI_SANDBOX_CODEX/_CLAUDE) and
+  mounted read-only.
+
 Per-user customization ($CONFIG_DIR):
   mounts.tsv   extra read-only mounts, same format as the site mounts file
   skel/        files copied into the synthetic home when missing there
                (e.g. skel/.bashrc as your durable template)
   config       defaults, 'key = value' lines: home_mode, scratch, personal_libs,
-               agent, module, read  (not write: writable paths need a profile
-               or the command line)
+               agent, module, read, codex_seed, claude_seed, seed_credentials
+               (not write: writable paths need a profile or the command line)
   profiles/NAME.conf
                same keys plus 'write' and 'description'; used with --profile NAME.
                Site profiles: $SITE_PROFILES/NAME.conf
@@ -106,6 +129,7 @@ warn() { [ "$QUIET" = 1 ] || echo "$PROG: warning: $*" >&2; }
 # ---------------------------------------------------------------- options --
 WRITE_REQ=(); READ_REQ=(); MODULES=(); CLI_MODULES=(); PROFILES=(); CMD_STR=""; ARGV=()
 CLI_HOME_MODE=""; CLI_SCRATCH=""; CLI_PERSONAL=""; CLI_AGENT=""
+CLI_CODEX_SEED=""; CLI_CLAUDE_SEED=""; CLI_SEED_CRED=""; RESEED=0; YOLO=0
 DRY_RUN=0; PRINT_BINDS=0; QUIET=0; RESET_HOME=0; LIST_PROFILES=0
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -126,6 +150,13 @@ while [ $# -gt 0 ]; do
         --cmd)          [ $# -ge 2 ] || die "--cmd needs a string"; CMD_STR=$2; shift 2 ;;
         --agent)        [ $# -ge 2 ] || die "--agent needs a name"; CLI_AGENT=$2; shift 2 ;;
         --agent=*)      CLI_AGENT=${1#*=}; shift ;;
+        --yolo)         YOLO=1; shift ;;
+        --codex-seed)   [ $# -ge 2 ] || die "--codex-seed needs a folder"; CLI_CODEX_SEED=$2; shift 2 ;;
+        --codex-seed=*) CLI_CODEX_SEED=${1#*=}; shift ;;
+        --claude-seed)  [ $# -ge 2 ] || die "--claude-seed needs a folder"; CLI_CLAUDE_SEED=$2; shift 2 ;;
+        --claude-seed=*) CLI_CLAUDE_SEED=${1#*=}; shift ;;
+        --seed-credentials) CLI_SEED_CRED=yes; shift ;;
+        --reseed)       RESEED=1; shift ;;
         --reset-home)   RESET_HOME=1; shift ;;
         --dry-run)      DRY_RUN=1; shift ;;
         --print-binds)  PRINT_BINDS=1; shift ;;
@@ -141,6 +172,7 @@ done
 # ------------------------------------------------- config and profiles ------
 # Files are parsed, never sourced. Only the listed keys are accepted.
 HOME_MODE=synthetic; SCRATCH_RW=1; PERSONAL_LIBS=1; AGENT=shell
+CODEX_SEED=""; CLAUDE_SEED=""; SEED_CRED=0
 PROFILE_FILES=()
 expand_value() {   # ~, $HOME, $USER, $MYSCRATCH; nothing else is interpreted
     local v=$1
@@ -165,6 +197,9 @@ apply_conf() {   # FILE KIND(config|profile)
             scratch)       b=$(yesno "$val") || die "$file:$n: scratch must be yes or no"; SCRATCH_RW=$b ;;
             personal_libs) b=$(yesno "$val") || die "$file:$n: personal_libs must be yes or no"; PERSONAL_LIBS=$b ;;
             agent)         AGENT=$val ;;
+            codex_seed)    CODEX_SEED=$val ;;
+            claude_seed)   CLAUDE_SEED=$val ;;
+            seed_credentials) b=$(yesno "$val") || die "$file:$n: seed_credentials must be yes or no"; SEED_CRED=$b ;;
             module)        MODULES+=("$val") ;;
             read)          [[ "$val" == /* ]] || die "$file:$n: read path must be absolute"; READ_REQ+=("$val") ;;
             write)         [ "$kind" = profile ] ||
@@ -204,16 +239,24 @@ done
 [ -n "$CLI_SCRATCH" ] && SCRATCH_RW=$(yesno "$CLI_SCRATCH")
 [ -n "$CLI_PERSONAL" ] && PERSONAL_LIBS=$(yesno "$CLI_PERSONAL")
 [ -n "$CLI_AGENT" ] && AGENT=$CLI_AGENT
+[ -n "$CLI_CODEX_SEED" ] && CODEX_SEED=$CLI_CODEX_SEED
+[ -n "$CLI_CLAUDE_SEED" ] && CLAUDE_SEED=$CLI_CLAUDE_SEED
+[ -n "$CLI_SEED_CRED" ] && SEED_CRED=1
 READ_REQ+=("${CLI_READ[@]}"); WRITE_REQ+=("${CLI_WRITE[@]}"); MODULES+=("${CLI_MODULES[@]}")
 for m in "${MODULES[@]}"; do
     [[ "$m" =~ ^[A-Za-z0-9_.+/-]+$ ]] || die "invalid module name '$m'"
 done
 
 case "$AGENT" in
-    shell) ;;
-    codex|claude) die "--agent $AGENT is planned but not implemented yet; use --agent shell" ;;
-    *) die "unknown agent '$AGENT'" ;;
+    shell|codex|claude) ;;
+    *) die "unknown agent '$AGENT' (shell, codex or claude)" ;;
 esac
+[ "$AGENT" = shell ] || [ -z "$CMD_STR" ] || die "--cmd runs a shell command; with --agent $AGENT pass agent arguments after '--'"
+[ "$YOLO" = 0 ] || [ "$AGENT" != shell ] || die "--yolo needs --agent codex or --agent claude"
+for v in CODEX_SEED CLAUDE_SEED; do
+    [ -z "${!v}" ] || [ -d "${!v}" ] || die "seed folder not found: ${!v}"
+done
+[ "$SEED_CRED" = 0 ] || [ -n "$CODEX_SEED$CLAUDE_SEED" ] || die "--seed-credentials needs --codex-seed or --claude-seed"
 case "$HOME_MODE" in
     synthetic|real-ro|real-rw) ;;
     *) die "--home-mode must be synthetic, real-ro or real-rw (got '$HOME_MODE')" ;;
@@ -291,7 +334,9 @@ plan_ro() {
     local src=$1 dst=$2 note=${3:-} row m fs
     not_autofs "$src" "read-only mount"
     add_bind "$src" "$dst" ro "$note"
-    RO_SRC+=("$src"); RO_DST+=("$dst")
+    # Tools the wrapper mounts for its own use (agent CLIs, R hook) are not data:
+    # they do not constrain where writable paths may be.
+    case "$note" in "codex CLI"|"claude CLI"|"R hook") ;; *) RO_SRC+=("$src"); RO_DST+=("$dst") ;; esac
     while IFS=$'\t' read -r m fs; do
         [ -n "$m" ] || continue
         [ "$fs" != autofs ] || die "read-only mount $src contains an autofs map at $m; list the exports below it instead"
@@ -395,6 +440,54 @@ if [ "$HOME_MODE" = synthetic ] && [ "$PERSONAL_LIBS" = 1 ]; then
     if [ -d "$REAL_HOME/.local/lib" ]; then
         PERSONAL_PY=$(readlink -f "$REAL_HOME/.local/lib")
         RO_PLAN+=("$PERSONAL_PY"$'\t'"$HOST_HOME_DIR/.local/lib"$'\t'"personal Python libs")
+    fi
+fi
+
+# Agent CLIs from the host, mounted read-only. Codex: the npm package is a node
+# launcher around a static native binary in vendor/<triple>/ (with its bundled
+# ripgrep); mount that folder, no node needed. Claude Code: a native binary.
+is_elf() { [ -f "$1" ] && [ "$(head -c4 "$1" 2>/dev/null | od -An -c | tr -d ' ')" = "177ELF" ]; }
+CODEX_SRC=""; CODEX_DST=""; CLAUDE_SRC=""
+resolve_codex() {
+    local p r d c
+    p=${LIBD_AI_SANDBOX_CODEX:-$(command -v codex 2>/dev/null || true)}
+    [ -n "$p" ] || return 1
+    r=$(readlink -f "$p") || return 1
+    if is_elf "$r"; then CODEX_SRC=$r; CODEX_DST=$AGENT_MNT/codex/bin/codex; return 0; fi
+    d=$(dirname "$(dirname "$r")")
+    for c in "$d"/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-*  "$d"/vendor/x86_64-unknown-linux-*; do
+        if [ -x "$c/bin/codex" ]; then CODEX_SRC=$c; CODEX_DST=$AGENT_MNT/codex; return 0; fi
+    done
+    return 1
+}
+resolve_claude() {
+    local p r
+    p=${LIBD_AI_SANDBOX_CLAUDE:-$(command -v claude 2>/dev/null || true)}
+    [ -n "$p" ] || return 1
+    r=$(readlink -f "$p") || return 1
+    is_elf "$r" || return 2
+    CLAUDE_SRC=$r
+}
+if resolve_codex; then RO_PLAN+=("$CODEX_SRC"$'\t'"$CODEX_DST"$'\t'"codex CLI")
+elif [ "$AGENT" = codex ]; then die "codex CLI not found (put it on PATH or set LIBD_AI_SANDBOX_CODEX)"; fi
+rc=0; resolve_claude || rc=$?
+if [ $rc = 0 ]; then RO_PLAN+=("$CLAUDE_SRC"$'\t'"$AGENT_MNT/claude/bin/claude"$'\t'"claude CLI")
+elif [ "$AGENT" = claude ]; then
+    [ $rc = 2 ] && die "claude on PATH is not the native Claude Code binary; install the native build or set LIBD_AI_SANDBOX_CLAUDE"
+    die "claude CLI not found (put it on PATH or set LIBD_AI_SANDBOX_CLAUDE)"
+fi
+
+# Each agent's own config folder for this sandbox: host path and container path.
+if [ "$HOME_MODE" = synthetic ]; then
+    SBX_HOME_ABS=$(realpath -m -- "$SBX_HOME")
+    CODEX_DIR_HOST=$SBX_HOME_ABS/.codex;   CODEX_DIR_IN=$REAL_HOME/.codex
+    CLAUDE_DIR_HOST=$SBX_HOME_ABS/.claude; CLAUDE_DIR_IN=$REAL_HOME/.claude
+else
+    CODEX_DIR_HOST=$STATE/agents/codex;   CODEX_DIR_IN=$CODEX_DIR_HOST
+    CLAUDE_DIR_HOST=$STATE/agents/claude; CLAUDE_DIR_IN=$CLAUDE_DIR_HOST
+    if [ "$HOME_MODE" = real-ro ]; then
+        WRITE_PLAN+=("$CODEX_DIR_HOST"$'\t'"$CODEX_DIR_IN"$'\t'"codex config")
+        WRITE_PLAN+=("$CLAUDE_DIR_HOST"$'\t'"$CLAUDE_DIR_IN"$'\t'"claude config")
     fi
 fi
 
@@ -515,8 +608,25 @@ done
 # interactive session the login shell then execs an interactive shell, which
 # inherits the loaded modules.
 PRELUDE=""
+AGENT_PATH=""
+[ -n "$CODEX_SRC" ] && AGENT_PATH+="$AGENT_MNT/codex/bin:"
+[ -n "$CLAUDE_SRC" ] && AGENT_PATH+="$AGENT_MNT/claude/bin:"
+[ -n "$AGENT_PATH" ] && PRELUDE="export PATH=\"${AGENT_PATH}\$PATH\""
 if [ ${#MODULES[@]} -gt 0 ]; then
-    PRELUDE="module load ${MODULES[*]} || echo '$PROG: some modules failed to load' >&2"
+    PRELUDE+=$'\n'"module load ${MODULES[*]} || echo '$PROG: some modules failed to load' >&2"
+fi
+if [ "$AGENT" != shell ]; then
+    AGENT_CMD=("$AGENT")
+    # Codex's own command sandbox (bwrap) cannot nest inside this container, so it
+    # is always off; the container is the boundary. Without --yolo, Codex still
+    # asks for approval according to its approval policy.
+    if [ "$YOLO" = 1 ]; then
+        [ "$AGENT" = codex ] && AGENT_CMD+=(--dangerously-bypass-approvals-and-sandbox)
+        [ "$AGENT" = claude ] && AGENT_CMD+=(--dangerously-skip-permissions)
+    elif [ "$AGENT" = codex ]; then
+        AGENT_CMD+=(--sandbox danger-full-access)
+    fi
+    ARGV=("${AGENT_CMD[@]}" "${ARGV[@]}")
 fi
 if [ -z "$PRELUDE" ]; then
     if [ -n "$CMD_STR" ]; then INNER=(bash -lc "$CMD_STR")
@@ -527,7 +637,8 @@ else
     elif [ ${#ARGV[@]} -gt 0 ]; then INNER=(bash -lc "$PRELUDE"$'\n''exec "$@"' "$PROG" "${ARGV[@]}")
     else INNER=(bash -lc "$PRELUDE"$'\n''exec bash -i'); fi
 fi
-EXTRA_ENV=()
+EXTRA_ENV=(--env "CODEX_HOME=$CODEX_DIR_IN" --env "CLAUDE_CONFIG_DIR=$CLAUDE_DIR_IN"
+           --env "DISABLE_AUTOUPDATER=1")
 [ -n "$PERSONAL_R" ] && EXTRA_ENV+=(--env "R_PROFILE_USER=/.libd-ai-sandbox/Rprofile.R")
 
 CMD=("$RUNTIME" exec
@@ -586,6 +697,13 @@ write_log() {
         printf '  "rootfs": %s,\n' "$(json_str "$ROOTFS")"
         printf '  "mounts_files": %s,\n' "$(json_arr "${MOUNT_FILES[@]}")"
         printf '  "agent": %s,\n' "$(json_str "$AGENT")"
+        printf '  "agent_yolo": %s,\n' "$([ "$YOLO" = 1 ] && echo true || echo false)"
+        printf '  "codex_cli": %s,\n' "$(json_str "$CODEX_SRC")"
+        printf '  "claude_cli": %s,\n' "$(json_str "$CLAUDE_SRC")"
+        printf '  "codex_home": %s,\n' "$(json_str "$CODEX_DIR_HOST")"
+        printf '  "claude_config_dir": %s,\n' "$(json_str "$CLAUDE_DIR_HOST")"
+        printf '  "seeds": %s,\n' "$(json_arr ${CODEX_SEED:+"codex:$CODEX_SEED"} ${CLAUDE_SEED:+"claude:$CLAUDE_SEED"})"
+        printf '  "seed_credentials": %s,\n' "$([ "$SEED_CRED" = 1 ] && echo true || echo false)"
         printf '  "home_mode": %s,\n' "$(json_str "$HOME_MODE")"
         printf '  "profiles": %s,\n' "$(json_arr "${PROFILE_FILES[@]}")"
         printf '  "modules": %s,\n' "$(json_arr "${MODULES[@]}")"
@@ -607,6 +725,10 @@ write_log() {
 
 if [ "$DRY_RUN" = 1 ]; then
     print_binds
+    echo
+    echo "agent config: codex -> $CODEX_DIR_HOST, claude -> $CLAUDE_DIR_HOST"
+    [ -n "$CODEX_SEED" ] && echo "would seed codex settings from $CODEX_SEED$([ "$SEED_CRED" = 1 ] && echo ' (with credentials)')"
+    [ -n "$CLAUDE_SEED" ] && echo "would seed claude settings from $CLAUDE_SEED$([ "$SEED_CRED" = 1 ] && echo ' (with credentials)')"
     echo
     printf '%q ' "${CMD[@]}"; echo
     exit 0
@@ -665,6 +787,38 @@ EOF
 mkdir -p "$SCR" "$SBX_WORK" "$SBX_CACHE" "$SBX_LOGS"
 chmod 700 "$SCR" "$STATE" 2>/dev/null || true
 if [ "$HOME_MODE" = synthetic ]; then init_synthetic_home; fi
+
+# Agent config folders, seeding and the sandbox notes in each agent's instructions.
+mkdir -p "$CODEX_DIR_HOST" "$CLAUDE_DIR_HOST"
+chmod 700 "$CODEX_DIR_HOST" "$CLAUDE_DIR_HOST"
+SEED_ARGS=(); [ "$SEED_CRED" = 1 ] && SEED_ARGS+=(--credentials); [ "$RESEED" = 1 ] && SEED_ARGS+=(--overwrite)
+seed_out=""
+[ -n "$CODEX_SEED" ] && seed_out+=$("$AGENT_CONFIG_TOOL" seed --agent codex --src "$CODEX_SEED" --dest "$CODEX_DIR_HOST" "${SEED_ARGS[@]}")$'\n'
+[ -n "$CLAUDE_SEED" ] && seed_out+=$("$AGENT_CONFIG_TOOL" seed --agent claude --src "$CLAUDE_SEED" --dest "$CLAUDE_DIR_HOST" "${SEED_ARGS[@]}")$'\n'
+NOTES=$(
+    echo "## libd-ai-sandbox"
+    echo
+    echo "You are running inside libd-ai-sandbox on JHPCE (container $PROG $VERSION)."
+    echo "LIBD/JHPCE storage (/dcs*/lieber, /jhpce/shared) and system paths are mounted"
+    echo "read-only on purpose; writes there fail with 'Read-only file system'. Do not try"
+    echo "to work around this. Writable locations in this session:"
+    echo
+    for w in "${WRITABLE[@]}" "/tmp (scratch-backed)"; do echo "- ${w%% (synthetic:*}"; done
+    echo
+    echo "Slurm (sbatch, srun, ...) and ssh are disabled inside the sandbox. Software comes"
+    echo "from JHPCE modules: module avail, module load conda_R/4.5.x. Prefer reading"
+    echo "metadata over loading whole datasets."
+)
+"$AGENT_CONFIG_TOOL" notes --agent codex --dest "$CODEX_DIR_HOST" <<<"$NOTES"
+"$AGENT_CONFIG_TOOL" notes --agent claude --dest "$CLAUDE_DIR_HOST" <<<"$NOTES"
+LOGIN_HINT=""
+if [ "$AGENT" = codex ] && [ ! -s "$CODEX_DIR_HOST/auth.json" ]; then
+    LOGIN_HINT="Codex is not logged in inside the sandbox yet. On a cluster node use the device code flow:
+    $PROG --agent codex -- login --device-auth"
+elif [ "$AGENT" = claude ] && [ ! -s "$CLAUDE_DIR_HOST/.credentials.json" ]; then
+    LOGIN_HINT="Claude Code is not logged in inside the sandbox yet; it will offer /login on start
+    (open the URL it prints in your browser and paste the code back)."
+fi
 LOG=$SBX_LOGS/$(date +%Y%m%d-%H%M%S)-$$.json
 write_log "$LOG"
 
@@ -674,6 +828,12 @@ if [ "$QUIET" != 1 ]; then
         printf '  writable: %s\n' "${WRITABLE[@]}" /tmp
         [ "$HOME_MODE" = real-rw ] &&
             echo "  WARNING: your real home is writable; the agent can change dotfiles that your host logins run."
+        [ "$AGENT" != shell ] && echo "  agent:    $AGENT$([ "$YOLO" = 1 ] && echo ' (no agent-side permission prompts)')"
+        # "kept" lines only when seeding was asked for on this command line
+        [ -n "$CLI_CODEX_SEED$CLI_CLAUDE_SEED" ] || seed_out=$(printf '%s' "$seed_out" | grep -v ' kept existing ' || true)
+        [ -n "${seed_out//[[:space:]]/}" ] && printf '%s\n' "$seed_out" | sed '/^$/d; s/^/  /'
+        [ "$SEED_CRED" = 1 ] && echo "  note:     login copied; the original and the copy share one refresh token"
+        [ -n "$LOGIN_HINT" ] && echo "  $LOGIN_HINT"
         echo "  log:      $LOG"
     } >&2
 fi

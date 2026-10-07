@@ -1,0 +1,165 @@
+#!/usr/bin/python3 -I
+"""Host-side helper for libd-ai-sandbox agent configuration folders.
+
+  agent-config seed  --agent codex|claude --src DIR --dest DIR [--credentials] [--overwrite]
+  agent-config notes --agent codex|claude --dest DIR      (block text on stdin)
+
+seed copies an allow-list of settings from an existing agent folder (e.g. ~/.codex)
+into the sandbox's agent folder. History, sessions, databases, logs and caches are
+never copied. Credentials are copied only with --credentials. Existing files in the
+destination are kept unless --overwrite is given.
+
+notes maintains a marked block in the agent's global instructions file (AGENTS.md
+for Codex, CLAUDE.md for Claude Code); text outside the block is preserved.
+"""
+import argparse
+import json
+import os
+import shutil
+import sys
+
+SETTINGS = {
+    "codex": ["config.toml", "AGENTS.md", "skills", "prompts", "rules"],
+    "claude": ["settings.json", "CLAUDE.md", "commands", "agents", "skills",
+               "keybindings.json", "output-styles"],
+}
+CREDENTIALS = {"codex": ["auth.json"], "claude": [".credentials.json"]}
+NOTES_FILE = {"codex": "AGENTS.md", "claude": "CLAUDE.md"}
+# Keys copied from Claude Code's .claude.json (which lives next to ~/.claude, or
+# inside the folder when CLAUDE_CONFIG_DIR is used). Everything else in it is
+# history/caches.
+CLAUDE_JSON_SETTINGS = ["hasCompletedOnboarding", "lastOnboardingVersion", "theme"]
+CLAUDE_JSON_ACCOUNT = ["oauthAccount", "userID"]
+BEGIN = "<!-- libd-ai-sandbox:begin (managed; regenerated at every launch) -->"
+END = "<!-- libd-ai-sandbox:end -->"
+
+
+def strip_block(text):
+    out, skip = [], False
+    for line in text.splitlines(keepends=True):
+        if line.startswith("<!-- libd-ai-sandbox:begin"):
+            skip = True
+            continue
+        if line.startswith(END):
+            skip = False
+            continue
+        if not skip:
+            out.append(line)
+    return "".join(out)
+
+
+def only_block(path):
+    """True if the file holds nothing but the managed block (so seeding may fill it)."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return strip_block(f.read()).strip() == ""
+
+
+def copy_file(src, dst, overwrite, private=False):
+    """Copy one file; return 'seeded' or 'kept'."""
+    if os.path.lexists(dst) and not overwrite:
+        if not (os.path.basename(dst) in NOTES_FILE.values() and only_block(dst)):
+            return "kept"
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copyfile(src, dst)
+    os.chmod(dst, 0o600 if private else 0o644)
+    return "seeded"
+
+
+def copy_tree(src, dst, overwrite):
+    """Copy a folder file by file; skip agent-managed '.system' subfolders."""
+    counts = {"seeded": 0, "kept": 0}
+    for root, dirs, files in os.walk(src):
+        dirs[:] = [d for d in dirs if d != ".system"]
+        rel = os.path.relpath(root, src)
+        for name in files:
+            s = os.path.join(root, name)
+            if os.path.islink(s) and not os.path.exists(s):
+                continue
+            counts[copy_file(s, os.path.normpath(os.path.join(dst, rel, name)), overwrite)] += 1
+    return counts
+
+
+def seed(args):
+    src, dest, agent = args.src, args.dest, args.agent
+    if not os.path.isdir(src):
+        sys.exit(f"agent-config: source folder not found: {src}")
+    os.makedirs(dest, mode=0o700, exist_ok=True)
+    items = SETTINGS[agent] + (CREDENTIALS[agent] if args.credentials else [])
+    seeded, kept = [], []
+    for item in items:
+        s = os.path.join(src, item)
+        if os.path.isdir(s):
+            c = copy_tree(s, os.path.join(dest, item), args.overwrite)
+            if c["seeded"]:
+                seeded.append(f"{item}/ ({c['seeded']} files)")
+            if c["kept"]:
+                kept.append(f"{item}/ ({c['kept']} files)")
+        elif os.path.isfile(s):
+            r = copy_file(s, os.path.join(dest, item), args.overwrite,
+                          private=item in CREDENTIALS[agent])
+            (seeded if r == "seeded" else kept).append(item)
+    if agent == "claude":
+        cands = [os.path.join(src, ".claude.json")]
+        if os.path.basename(os.path.normpath(src)) == ".claude":
+            cands.append(os.path.join(os.path.dirname(os.path.normpath(src)), ".claude.json"))
+        sj = next((c for c in cands if os.path.isfile(c)), None)
+        if sj:
+            with open(sj) as f:
+                data = json.load(f)
+            keys = CLAUDE_JSON_SETTINGS + (CLAUDE_JSON_ACCOUNT if args.credentials else [])
+            dj = os.path.join(dest, ".claude.json")
+            cur = {}
+            if os.path.isfile(dj):
+                with open(dj) as f:
+                    cur = json.load(f)
+            changed = []
+            for k in keys:
+                if k in data and (args.overwrite or k not in cur):
+                    cur[k] = data[k]
+                    changed.append(k)
+            if changed:
+                tmp = dj + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(cur, f, indent=2)
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, dj)
+                seeded.append(f".claude.json ({', '.join(changed)})")
+    if seeded:
+        print(f"{agent} seeded from {src}: {', '.join(seeded)}")
+    if kept:
+        print(f"{agent} kept existing (use --reseed to overwrite): {', '.join(kept)}")
+
+
+def notes(args):
+    os.makedirs(args.dest, mode=0o700, exist_ok=True)
+    path = os.path.join(args.dest, NOTES_FILE[args.agent])
+    body = sys.stdin.read().rstrip("\n")
+    old = ""
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            old = strip_block(f.read()).rstrip("\n")
+    text = (old + "\n\n" if old.strip() else "") + BEGIN + "\n" + body + "\n" + END + "\n"
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("seed")
+    s.add_argument("--agent", choices=SETTINGS, required=True)
+    s.add_argument("--src", required=True)
+    s.add_argument("--dest", required=True)
+    s.add_argument("--credentials", action="store_true")
+    s.add_argument("--overwrite", action="store_true")
+    n = sub.add_parser("notes")
+    n.add_argument("--agent", choices=SETTINGS, required=True)
+    n.add_argument("--dest", required=True)
+    args = ap.parse_args()
+    seed(args) if args.cmd == "seed" else notes(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -11,11 +11,11 @@ Measured facts: `docs/runtime_findings.md`. Test suite: `tests/test_wrapper.sh`.
 | 3 | Wrapper skeleton: binds, synthetic home, `--write`/`--read`, deny binds, `--dry-run`, logging | done, tested |
 | 3b | Durable synthetic home, skel, user mounts file, `--home-mode`, nested ro rebind | done, tested (45 checks) |
 | 3c | Profiles, `config`, `--module`, read-only personal R/Python libraries | done, tested (56 checks) |
-| 4 | Agent config provisioning into synthetic home | next |
+| 4 | Agent modes, per-sandbox agent config folders, settings seeding, sandbox notes | done, tested (71 checks) |
 | 5 | Lua modulefile (development copy) | done, tested with `module use` |
 | 6 | Validate on compute nodes | done: compute-148, compute-092, compute-147, compute-162 |
 | 7 | Non-setuid fallback: host-root container under SCE 4.5.1 `--userns` | open |
-| 8 | Codex and Claude modes | open |
+| 8 | Codex and Claude modes | done (launch, args, `--yolo`); interactive login to be exercised by a user |
 | 9 | Deliberate negative tests through an agent | open |
 | 10 | Metadata inspectors | optional |
 | 11 | README, deployment to `/jhpce/shared/libd` and `jhpce_module_config` | open |

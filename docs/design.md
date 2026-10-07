@@ -1,4 +1,4 @@
-# libd-ai-sandbox: Design (revision 5, 2026-10-07)
+# libd-ai-sandbox: Design (revision 6, 2026-10-07)
 
 Supersedes `docs/initial/project_details.md`. Measured facts behind the choices here are in
 `docs/runtime_findings.md`.
@@ -193,8 +193,7 @@ directories at their usual path inside the synthetic home.
   the synthetic `~/.Rprofile`. Python: for each `pythonX.Y/site-packages` in the real home, a
   `libd-ai-sandbox-host.pth` in the synthetic user site appends the real one. Result: installed
   packages load; `install.packages` and `pip install --user` write to the sandbox home.
-- Agent configuration (Codex, Claude) will be copied in for the selected agent (phase 4). `.ssh`,
-  `.aws`, `.netrc`, `.git-credentials` are never copied.
+- Agent configuration: see §10. `.ssh`, `.aws`, `.netrc`, `.git-credentials` are never copied.
 
 ## 9. Configuration layers
 
@@ -217,7 +216,9 @@ Both are `key = value` files, parsed and never sourced; unknown keys abort the l
 | `home_mode` | yes | yes | `synthetic`, `real-ro`, `real-rw` |
 | `scratch` | yes | yes | `yes`/`no`: mount `$MYSCRATCH` writable |
 | `personal_libs` | yes | yes | `yes`/`no` |
-| `agent` | yes | yes | `shell` (others planned) |
+| `agent` | yes | yes | `shell`, `codex`, `claude` |
+| `codex_seed`, `claude_seed` | yes | yes | settings source folder |
+| `seed_credentials` | yes | yes | `yes`/`no` |
 | `module` | yes | yes | module to load at session start (repeatable) |
 | `read` | yes | yes | read-only path (repeatable) |
 | `write` | **no** | yes | writable path (repeatable) |
@@ -249,15 +250,61 @@ interactive session then continues in an interactive shell that inherits them.
   `.condarc`) copied or bound read-only into the synthetic home.
 - **Site policy knobs**: forbid `real-rw`, cap `--write` to an allow-list of roots
   (e.g. `*/agent_outputs/*`), require a reason string recorded in the log.
-- **Agent defaults** per user; per-project `AGENTS.md` injection.
+- Per-project `AGENTS.md` injection.
 - **`libd-ai-sbatch`**: submit a job that re-enters the same sandbox with the same binds.
 
 ## 10. Agents
 
-`--agent shell` is implemented. `codex` and `claude` are planned. Because the container is the
-safety boundary, their own permission prompts can be relaxed inside it
-(`claude --dangerously-skip-permissions`, Codex full-access mode). They will be told where they
-are via generated `~/.codex/AGENTS.md` / `~/.claude/CLAUDE.md` naming the writable paths.
+`--agent shell|codex|claude`. Arguments after `--` go to the agent
+(`--agent codex -- login --device-auth`, `--agent claude -- -p "..."`).
+
+### 10.1 Decoupled from the user's own agent setup
+
+- **Own config folder per agent, per sandbox.** `CODEX_HOME` and `CLAUDE_CONFIG_DIR` are always set:
+  `~/.codex` and `~/.claude` of the synthetic home, or `~/.libd-ai-sandbox/agents/{codex,claude}`
+  with `--home-mode real-ro|real-rw` (made writable in `real-ro`). With `CLAUDE_CONFIG_DIR` set,
+  Claude Code keeps its `.claude.json` inside the folder (verified), so nothing lands in `$HOME`.
+- **Separate login by default.** The user logs in once inside the sandbox; it persists with the
+  durable home. The tokens are independent of the host logins, so no refresh-token sharing.
+  Codex on a cluster node: `libd-ai-sandbox --agent codex -- login --device-auth`. Claude Code
+  offers `/login` (URL + pasted code) on first start. The startup banner says when no login exists.
+- The user's real `~/.codex`, `~/.claude`, `~/.claude.json` are never read unless named as a seed,
+  and never written.
+
+### 10.2 Seeding settings (`--codex-seed DIR`, `--claude-seed DIR`)
+
+Done on the host by `libexec/agent-config` before the container starts. Copies an allow-list:
+
+| Agent | Copied | Never copied |
+|---|---|---|
+| Codex | `config.toml`, `AGENTS.md`, `skills/` (minus agent-managed `.system/`), `prompts/`, `rules/` | sessions, history, SQLite state, logs, caches, memories |
+| Claude | `settings.json`, `CLAUDE.md`, `commands/`, `agents/`, `skills/`, `keybindings.json`, `output-styles/`; from `.claude.json` only `hasCompletedOnboarding`, `lastOnboardingVersion`, `theme` | projects, history, sessions, caches, every other `.claude.json` key |
+
+- Existing files are kept; `--reseed` overwrites. An instructions file that holds only the sandbox
+  notes block counts as empty, so a later seed still fills it.
+- `--seed-credentials` adds `auth.json` / `.credentials.json` (mode 600) and the `oauthAccount`,
+  `userID` keys of `.claude.json`. The banner warns that original and copy share one refresh token:
+  if a provider rotates refresh tokens, whichever side refreshes first may log out the other.
+- Config/profile keys: `codex_seed`, `claude_seed`, `seed_credentials`.
+
+### 10.3 Sandbox notes
+
+At every launch a marked block (`<!-- libd-ai-sandbox:begin ... end -->`) in the agent's global
+instructions (`AGENTS.md` for Codex, `CLAUDE.md` for Claude) is regenerated: read-only storage,
+the session's writable paths, Slurm/ssh disabled, use modules. Text outside the block is kept.
+
+### 10.4 Agent CLIs and permissions
+
+- CLIs are found on the user's `PATH` at launch (or `LIBD_AI_SANDBOX_CODEX`, `LIBD_AI_SANDBOX_CLAUDE`)
+  and mounted read-only under `/.libd-ai-sandbox/agents/`, first on `PATH` inside. For Codex
+  installed with npm, the native `vendor/<triple>/` folder (binary plus bundled ripgrep) is
+  mounted, so no Node.js is needed. Claude Code must be the native binary. Auto-update is disabled
+  inside (`DISABLE_AUTOUPDATER=1`); updating stays a host action.
+- Codex's own command sandbox (bwrap) cannot nest in the container (`bwrap: Can't bind mount
+  /oldroot/ on /newroot/`, measured), so Codex always starts with `--sandbox danger-full-access`;
+  its approval prompts still apply. The container is the boundary.
+- `--yolo` drops the agents' prompts: Codex `--dangerously-bypass-approvals-and-sandbox`, Claude
+  `--dangerously-skip-permissions`. Writes remain limited to the writable paths.
 
 ## 11. Wrapper and module
 
@@ -271,7 +318,12 @@ are via generated `~/.codex/AGENTS.md` / `~/.claude/CLAUDE.md` naming the writab
 --no-personal-libs  do not expose real ~/R and ~/.local/lib read-only
 --cmd STRING        bash -lc STRING
 -- CMD ARGS...      run CMD in a login environment
---agent shell       (codex|claude planned)
+--agent NAME        shell | codex | claude  (agent args after --)
+--yolo              agents without their own permission prompts
+--codex-seed DIR    copy Codex settings into the sandbox's Codex folder
+--claude-seed DIR   copy Claude Code settings likewise
+--seed-credentials  also copy the logins
+--reseed            overwrite previously seeded files
 --reset-home        archive and recreate the synthetic home
 --dry-run           print bind table and runtime command; creates nothing
 --print-binds       print bind table
@@ -291,5 +343,5 @@ against an unset `HOSTNAME`.
 - Which lab exports beyond `*/lieber` belong in the default site mounts file?
 - Which of §9.2 to implement before sharing the module?
 - Validate the host-root container under SingularityCE 4.5.1 `--userns` as a fallback.
-- Does Codex's own Landlock sandbox work inside the container?
-- Where should agent CLIs live: per-user installs or `/jhpce/shared/libd`?
+- Agent CLIs from per-user installs work; should the shared module also ship site-installed
+  copies under `/jhpce/shared/libd` (set via `LIBD_AI_SANDBOX_CODEX/_CLAUDE` in the modulefile)?
