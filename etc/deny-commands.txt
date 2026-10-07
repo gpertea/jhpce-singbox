@@ -1,0 +1,15 @@
+# Host commands replaced inside the sandbox by libexec/deny.
+# They would let the agent start processes outside the sandbox, which could then
+# write anywhere the user can. Paths are absolute host paths under a ro mount.
+/usr/bin/sbatch
+/usr/bin/srun
+/usr/bin/salloc
+/usr/bin/scancel
+/usr/bin/scontrol
+/usr/bin/sbcast
+/usr/bin/strigger
+/usr/bin/scrontab
+/usr/bin/ssh
+/usr/bin/scp
+/usr/bin/sftp
+/usr/bin/slogin

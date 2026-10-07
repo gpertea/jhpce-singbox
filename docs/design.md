@@ -1,4 +1,4 @@
-# libd-ai-sandbox: Design (revision 2, 2026-10-07)
+# libd-ai-sandbox: Design (revision 3, 2026-10-07)
 
 Supersedes `docs/initial/project_details.md`. Measured facts behind the choices here are in
 `docs/runtime_findings.md`.
@@ -33,7 +33,7 @@ the fourth.
 |---|---|---|
 | Direct filesystem writes | `rm -rf`, `sed -i`, tools writing caches or indexes next to inputs, scripts assuming inputs are writable | Kernel-enforced read-only bind mounts; only designated paths writable |
 | Writes to the real home | dotfile edits, `pip install --user`, R library installs, `.Rhistory` | Real home never mounted; synthetic scratch-backed home at the same path |
-| Escape to an unsandboxed process | `sbatch`/`srun`/`salloc`, `ssh`/`scp`/`rsync` to a login node | Binaries absent from the image, `/run/munge` and `~/.ssh` not mounted. Credentials are excluded **because they enable writes outside the sandbox**, not for secrecy |
+| Escape to an unsandboxed process | `sbatch`/`srun`/`salloc`, `ssh`/`scp` to another node | Deny script bound over each such host binary, `/run/munge` and `~/.ssh` never mounted. Credentials are excluded **because they enable writes outside the sandbox**, not for secrecy |
 | Network services that write to JHPCE storage on the user's behalf | Globus, a mounted cloud share, a web app with storage access | Out of scope; requires user credentials the agent does not have by default |
 
 ## 3. Runtime
@@ -43,229 +43,162 @@ JHPCE ships both forks of the original Singularity:
 | Module | What it is | Status on JHPCE |
 |---|---|---|
 | `singularity/3.11.4` (default) | SingularityCE (Sylabs fork) | setuid install; fastest start; correct group display; **default runtime** |
-| `singularity/4.5.1` | SingularityCE | non-setuid; works only with `--userns`; groups display as `nobody`; **supported fallback** |
-| `apptainer/1.5.3` | Apptainer (Linux Foundation fork) | non-setuid; converts SIF to a sandbox in `/tmp` per launch; acceptable fallback |
+| `singularity/4.5.1` | SingularityCE | non-setuid; works only with `--userns`; groups display as `nobody`; fallback |
+| `apptainer/1.5.3` | Apptainer (Linux Foundation fork) | non-setuid; slow SIF start (no squashfuse); fallback |
 
 Setuid is **not** required for the safety goal: all three runtimes enforce read-only binds,
 refuse remounts, and keep supplementary-group read access (`docs/runtime_findings.md`).
+SingularityCE 3.11.4 is the default because it is fastest and shows correct group ownership.
 
-Default: **SingularityCE 3.11.4**, because it is fastest and is the only mode that shows correct
-group ownership, which a metadata-crawling agent may need to report. Supported fallback:
-**SingularityCE 4.5.1 with `--userns`**, the current release; use it if 3.11.4 is retired or
-setuid is removed. Apptainer 1.5.3 works but unpacks the SIF on every launch until the site
-installs `squashfuse`.
+The wrapper calls the runtime by absolute path (`LIBD_AI_SANDBOX_RUNTIME`), never through
+`module load` (the site runtime modulefiles fail when `HOSTNAME` is unset). Options go on the
+command line only, never via `SINGULARITY_*`/`APPTAINER_*` variables. Running the host-root
+container (§4) under a non-setuid runtime with `--userns` is not yet tested; until it is, the
+fallbacks are documented, not supported.
 
-The wrapper selects the runtime via `LIBD_AI_SANDBOX_RUNTIME` (absolute path), detects whether
-the runtime is setuid (owner root and setuid bit on `libexec/*/bin/starter-suid`), and adds
-`--userns` when it is not. Docs say "Singularity/Apptainer" generically and name the runtime when
-it matters. Options go on the command line only, never via `SINGULARITY_*`/`APPTAINER_*` variables.
+The wrapper refuses to run anywhere but a compute or transfer node.
 
-The runtime modulefiles only load on compute/transfer nodes, so the wrapper refuses to run on a
-login node with a message pointing at `srun --pty bash`.
+## 4. Host-root container: no image
 
-## 4. Filesystem model
+The container root is a **skeleton directory** (`share/rootfs`, made by `libexec/make-rootfs`):
+empty mount-point directories mirroring the host's top level plus the `bin -> usr/bin` style
+symlinks. The host's `/usr`, `/etc`, `/opt`, `/var/lib/sss` and `/var/lib/alternatives` are
+bind-mounted **read-only** on top. Consequences:
+
+- The environment *is* the node's environment: same OS packages, same `/etc/profile.d`, same
+  Lmod and `MODULEPATH`, `JHPCE_ROCKY9_DEFAULT_ENV` and `JHPCE_tools` loaded at login,
+  `module load conda_R/4.5.x` works, user and group names resolve through the SSSD socket.
+  On a compute node it is that compute node's OS.
+- Nothing to build or maintain; no image digest to track. OS updates on the nodes flow through.
+- Singularity refuses `/` itself as a container (`/ as sandbox is not authorized`), hence the
+  skeleton. Startup is about 0.2 s, 1 s including the login profile.
+- Host software can now include escape tools (`sbatch`, `ssh`), so these are masked (§7).
+
+Modules loaded in the user's host shell are **not** carried in (`--cleanenv`, fresh login); the
+session starts from the site default modules. Carrying `LOADEDMODULES` over is a possible
+follow-up.
+
+## 5. Filesystem model
 
 Inside the container the agent sees:
 
-| Path | Backing | Mode | Notes |
-|---|---|---|---|
-| `/dcs04/lieber`, `/dcs05/lieber`, `/dcs07/lieber`, further lab exports from `etc/mounts.tsv` | the real NFS exports | **ro** | same absolute paths as the host |
-| `/jhpce/shared` | real | **ro** | modules, shared software, LIBD module trees |
-| `/users/<user>` (`$HOME`) | `$MYSCRATCH/ai-sandbox/home` | rw | persistent across runs; see §5 |
-| `/tmp`, `/var/tmp` | `$MYSCRATCH/ai-sandbox/work/{tmp,var_tmp}` via `--workdir` | rw | without `--workdir` the runtime gives a 64 MB tmpfs |
-| `/agent_out` and/or a same-path directory | the user's `--write` target | rw | §6 |
-| `/payload` | the user's `--payload` path | ro | optional inputs outside the standard roots |
-| `/host_home` | the real `/users/<user>` | ro | optional, `--read-home`, for the user's own scripts |
-| image root (`/usr`, `/opt`, …) | SIF | ro | |
+| Path | Backing | Mode |
+|---|---|---|
+| `/usr`, `/etc`, `/opt`, `/var/lib/sss`, `/var/lib/alternatives` | host | **ro** |
+| `/jhpce/shared` | host | **ro** |
+| `/dcs04/lieber`, `/dcs05/lieber`, `/dcs07/lieber` (`etc/mounts.tsv`) | host NFS exports | **ro** |
+| any `--read PATH` | host | **ro**, same path |
+| `$MYSCRATCH` (`/fastscratch/myscratch/<user>`) | host | **rw** by default (`--no-scratch` to drop) |
+| any `--write PATH` | host | **rw**, same path |
+| `$HOME` (`/users/<user>`) | `$MYSCRATCH/ai-sandbox/home` | rw (synthetic) |
+| `/tmp`, `/var/tmp` | `$MYSCRATCH/ai-sandbox/work/{tmp,var_tmp}` | rw |
+| everything else (skeleton) | `share/rootfs` | ro, empty |
 
-Nothing else from the host is visible: `--contain` is always set, `mount hostfs = no` site-wide,
-and the current directory is never auto-bound (`--no-mount cwd`, `--pwd $HOME`).
+`$MYSCRATCH` is writable because it is the user's own purge-able scratch space, it is where the
+agent's home and temp already live, and it is the natural staging area for intermediate results.
+It holds nothing that is shared or irreplaceable by policy.
 
-### 4.1 Mount rules (hard requirements)
+### 5.1 Mount rules (enforced by the wrapper at every launch)
 
-1. **A read-only bind protects exactly one filesystem.** Mounts nested below it keep their own
-   flags, whether pre-existing or automounted later. Binding the autofs root `/dcs04` read-only
-   left `/dcs04/lieber` writable (measured). Therefore `etc/mounts.tsv` lists real export
-   mount points (`/dcs04/lieber`), never autofs roots, and the wrapper verifies from
-   `/proc/mounts` at launch that each ro source is a mount point (or lies within exactly one)
-   and that no other mount point exists strictly below it. Any violation aborts the launch.
-2. The runtime creates missing bind *destination* directories, and for a same-path target
-   nested under a read-only parent it did so **on the host** (measured). Writable targets must
-   exist on the host before launch; the wrapper creates them itself with `mkdir -p` only when the
-   user passed `--write`, and never lets the runtime do it.
-3. The wrapper always passes `--home`. Under `--contain` without `--home`/`--no-home` the real
-   home is mounted read-write (measured).
-4. `mounts.tsv` columns: `src dest mode required`. Missing `required=no` sources are skipped with
-   a warning; missing `required=yes` sources abort. Mode `rw` is rejected in this file; writable
-   paths come only from the command line.
+1. **A read-only bind protects exactly one filesystem.** Nested mounts keep their own flags
+   (binding the autofs root `/dcs04` read-only left `/dcs04/lieber` writable, measured). For every
+   bind source the wrapper first triggers its automount (a name lookup *inside* it; `readlink` and
+   `stat` do not trigger autofs), then reads `/proc/mounts` and refuses the launch if the source lies
+   on an autofs map or if any filesystem is mounted below it.
+2. Mounts files (`etc/mounts.tsv`, optional `$LIBD_AI_SANDBOX_MOUNTS_EXTRA`) may only contain
+   `ro` entries. Format `src dest mode required`; missing `required=no` sources are skipped.
+3. The wrapper always passes `--home`; under `--contain` without it the real home is mounted
+   read-write (measured).
+4. Bind arguments are ordered by destination depth so parents are mounted before children.
+5. `--contain`, `--cleanenv`, `--no-mount cwd` always. The container starts in the host's current
+   directory when that directory is visible inside, otherwise in `$HOME`.
 
-Default `etc/mounts.tsv`:
+## 6. Writable paths
 
-```tsv
-# src            dest             mode  required
-/jhpce/shared    /jhpce/shared    ro    yes
-/dcs04/lieber    /dcs04/lieber    ro    no
-/dcs05/lieber    /dcs05/lieber    ro    no
-/dcs07/lieber    /dcs07/lieber    ro    no
-# /dcs06/lieber and /dcs10/lieber do not exist on current nodes; add when they do
-```
+`--write PATH` (repeatable) mounts an existing directory read-write at its own path, nested inside
+its read-only parent. The wrapper refuses a target that:
 
-Users who need another lab's export can add a line in a personal override file
-(`$LIBD_AI_SANDBOX_MOUNTS_EXTRA`) with the same format and the same `rw`-rejection rule.
+- does not exist (no runtime-created mount points on host storage; measured to happen otherwise),
+- is `/`, or lies under `/usr /etc /opt /var /boot /proc /sys /dev /run /jhpce/shared`,
+- overlaps the real home (the synthetic home occupies that path),
+- equals or contains a read-only mount source (`--write /dcs04/lieber`, `--write /dcs04`),
+- is the root of a whole filesystem (`--write /fastscratch/myscratch`),
+- sits on an autofs map or has filesystems mounted below it.
 
-## 5. Synthetic home
+The list of writable paths is printed at startup, recorded in the launch log, and exported inside
+as `LIBD_AI_SANDBOX_RW` (colon-separated) so the agent can be told where it may write.
 
-- Location: `$MYSCRATCH/ai-sandbox/home`, mounted at the real `$HOME` path so tools and the
-  agent's own config find what they expect.
-- Persistent across runs so agent logins, caches, and installed user packages survive. `--reset-home`
-  moves it aside (`home.<timestamp>`) and starts fresh.
-- First run creates `.bashrc` (minimal, generated), `.cache/`, `.config/`, `.local/`, `R/`
-  (the shared R site profile tries to create `$HOME/R/<version>`), and sets `TMPDIR`,
-  `XDG_CACHE_HOME`, `PIP_CACHE_DIR`, `R_LIBS_USER`, `umask 077`.
-- **Agent configuration is provisioned by default**, limited to the selected agent's own directory:
-  `~/.codex/{auth.json,config.toml,AGENTS.md}` for Codex; `~/.claude/{.credentials.json,settings.json}`
-  and `~/.claude.json` for Claude Code. These files let the agent authenticate to its LLM service,
-  which is required for it to work at all, and they confer no write capability on JHPCE storage.
-  Copies are refreshed only when missing or when `--refresh-agent-config` is given.
-- **Never copied**: `.ssh/`, `.aws/`, `.gcp/`, `.azure/`, `.netrc`, `.git-credentials`, `.Renviron`,
-  `.Rprofile`, conda tokens. They are excluded because they are escape routes to unsandboxed
-  writes (ssh to a login node has full write access) or they change tool behaviour unpredictably.
-- The real home is never writable. `--read-home` exposes it read-only at `/host_home` for users who
-  keep scripts there. It is not mounted at `$HOME` because the synthetic home occupies that path.
-
-## 6. Writable output
-
-Two forms, both explicit per run:
-
-- `--write PATH` mounts PATH read-write at `/agent_out` (unambiguous, recommended default).
-- `--write-same-path PATH` mounts PATH read-write at the same absolute path, nested under its
-  read-only parent. Measured to work; preferred when the agent must write next to a project it is
-  also reading. Both may be given.
-
-Safeguards, since the write target is the one place the agent *can* destroy things:
-
-1. PATH must not be, or contain, any ro root from `mounts.tsv` (rejects `--write /dcs04/lieber`).
-2. PATH must be empty on first use, or carry the marker file `.libd_ai_sandbox_out` written by the
-   wrapper on first use. A non-empty directory without the marker is refused unless
-   `--write-force` is given. This stops `--write` from being pointed at an existing data directory
-   by mistake.
-3. PATH is created with `mkdir -p` by the wrapper when absent (after check 1).
-4. The launch log entry is also copied into PATH as `.libd_ai_sandbox_launch.<timestamp>.json`.
+The earlier `/agent_out` and `/payload` aliases are dropped: same-path `--write`/`--read` keep paths
+identical to the host, which is what scripts, notebooks and agents expect.
 
 ## 7. Escape routes to unsandboxed writes
 
-- Slurm: `sbatch srun salloc scancel squeue` are not in the image and `/run/munge` is never
-  bound, so even a user-installed client cannot authenticate. No deny-wrapper directory is
-  needed; a test asserts absence. A controlled re-entry wrapper (`libd-ai-sbatch`, submitting a
-  job that re-launches the same sandbox) is future work.
-- ssh/scp/rsync/sftp: not in the image, no keys in the synthetic home. JHPCE requires 2FA for
-  password logins, so an agent cannot open a session even if it installs a client.
-- Host software reachable through the ro `/jhpce/shared` bind must be checked for Slurm or ssh
-  clients when the mount list grows; today none are there (they live in `/usr/bin` on the host).
+- `etc/deny-commands.txt` lists host binaries that would start processes outside the sandbox:
+  `sbatch srun salloc scancel scontrol sbcast strigger scrontab ssh scp sftp slogin`. Each is
+  masked by a read-only bind of `libexec/deny`, which prints a message and exits 126.
+- `/run` is the skeleton's empty directory, so `/run/munge` is absent and no Slurm client can
+  authenticate even if run from another path. `squeue`/`sinfo` simply fail.
+- No ssh keys exist in the synthetic home; setuid binaries (`sudo`, `su`, `ssh-keysign`) are
+  inert because the container is mounted `nosuid`.
+- `rsync` stays available for local copies; remote rsync needs `ssh`, which is masked.
+- A controlled re-entry wrapper (`libd-ai-sbatch`, a job that re-launches the same sandbox) is
+  future work.
 
-## 8. Container image
+## 8. Synthetic home
 
-Keep the image thin and get software from the host:
-
-- Base: Rocky Linux 9 (matches compute nodes), plus the userland the shared tools shell out to:
-  `which hostname procps-ng util-linux findutils file less tree jq git tar gzip bzip2 xz zstd
-  ca-certificates glibc-langpack-en`. `rockylinux:9-minimal` lacks `which` and `hostname`, which
-  breaks the shared R's startup (measured).
-- `Lmod` (EPEL) plus `MODULEPATH` pointing at the ro-bound `/jhpce/shared/{libd,jhpce,community}/modulefiles`,
-  so `module load conda_R` works inside and the environment matches a compute node. Shared
-  `conda_R/4.5.x` and Node 24 were verified to run from the ro bind.
-- No R or Python stack baked in at first. If Lmod-in-container proves fragile, fall back to a
-  second, fatter image; the wrapper does not care.
-- Agent CLIs: Codex is a Node script and runs from a ro bind of the user's install
-  (`~/.local/lib/node_modules/@openai/codex`) or from a copy in `/jhpce/shared/libd`. Claude Code
-  is a self-contained binary and runs the same way. Preferred: install both under
-  `/jhpce/shared/libd/core/libd_ai_sandbox/<ver>/agents/` so the wrapper does not depend on
-  per-user installs.
-- Building: SingularityCE 3.11.4 `--fakeroot` needs `/etc/subuid` entries, which users do not
-  have. Apptainer 1.5.3 `--fakeroot` works without them (measured `uid=0` in build-like mode) and
-  is the first thing to try for `%post` with `dnf`. Otherwise build from a Dockerfile elsewhere and
-  pull the OCI image.
+- `$MYSCRATCH/ai-sandbox/home`, mounted at the real `$HOME` path, persistent across runs;
+  `--reset-home` archives it as `home.<timestamp>`.
+- First run creates `.bashrc` (sources `/etc/bashrc`, sets a `[sbx ...]` prompt), `.bash_profile`,
+  `.cache/`, `.config/`, `.local/bin/`, `R/`.
+- The user's umask is inherited, not forced to 077: files written into shared lab directories via
+  `--write` must stay group-readable.
+- Agent configuration (Codex `auth.json`/`config.toml`, Claude `.credentials.json`/`settings.json`,
+  `.claude.json`) will be copied in by default for the selected agent (phase 4). These confer no
+  write capability on JHPCE storage. `.ssh`, `.aws`, `.netrc`, `.git-credentials` are never copied.
+- Personal R libraries in the real `~/R/<ver>` are not visible. Exposing them read-only is an
+  open question (§12).
 
 ## 9. Agents
 
-`--agent codex | claude | shell`, default `shell` until Codex/Claude modes are validated.
+`--agent shell` is implemented. `codex` and `claude` are planned (phase 11). Because the container
+is the safety boundary, their own permission prompts can be relaxed inside it
+(`claude --dangerously-skip-permissions`, Codex full-access mode). They will be told where they
+are via generated `~/.codex/AGENTS.md` / `~/.claude/CLAUDE.md` naming the writable paths.
 
-Because the container is the safety boundary, the agents' own permission prompts may be relaxed
-inside it. That is the point of the project: `claude --dangerously-skip-permissions` and
-`codex --sandbox danger-full-access` (or `--yolo`) become acceptable because every write they can
-make lands in scratch or in the designated output. The agent's own sandbox (Codex uses Landlock
-plus seccomp on Linux) may still be left on as a second layer if it works inside the container;
-this is a test item, not a requirement.
-
-The agent is told where it is via a generated `AGENTS.md`/`CLAUDE.md` in the synthetic home:
+## 10. Wrapper (`bin/libd-ai-sandbox`, implemented)
 
 ```text
-You are running inside libd-ai-sandbox on JHPCE.
-All of /dcs*/lieber and /jhpce/shared is mounted read-only; do not try to write there.
-Durable outputs go to /agent_out (if present). Temporary files go to $HOME or /tmp (scratch).
-Slurm and ssh are unavailable here by design.
-Prefer metadata inspection over loading full datasets.
+--write PATH        rw at same path (repeatable)
+--read PATH         ro at same path (repeatable)
+--no-scratch        do not mount $MYSCRATCH rw
+--cmd STRING        bash -lc STRING
+-- CMD ARGS...      run CMD in a login environment
+--agent shell       (codex|claude planned)
+--reset-home        archive and recreate the synthetic home
+--dry-run           print bind table and runtime command
+--print-binds       print bind table
+--quiet
 ```
 
-## 10. Wrapper
+Configuration by environment: `LIBD_AI_SANDBOX_RUNTIME`, `LIBD_AI_SANDBOX_MOUNTS`,
+`LIBD_AI_SANDBOX_MOUNTS_EXTRA`, `LIBD_AI_SANDBOX_ROOTFS`, `LIBD_AI_SANDBOX_DENY`.
 
-`libd-ai-sandbox` (bash). Options for the first version:
-
-```text
---agent codex|claude|shell       default shell
---write PATH                     rw at /agent_out
---write-same-path PATH           rw at PATH
---write-force                    skip the empty-or-marker check
---payload PATH                   ro at /payload
---read-home                      real home ro at /host_home
---reset-home                     archive and recreate the synthetic home
---refresh-agent-config           re-copy the agent's config files
---cmd 'COMMAND' | -- ARGS...     run instead of the agent's default command
---dry-run                        print the full runtime command and bind table, exit
---print-binds                    print the resolved bind table, exit
---help
-```
-
-Launch sequence: refuse on login nodes → resolve runtime → validate image → load and verify
-mounts (§4.1) → prepare scratch dirs and synthetic home (§5) → validate write targets (§6) →
-assemble command → log → exec.
-
-Flags always passed:
-
-```text
---contain --cleanenv --no-mount cwd
---home $MYSCRATCH/ai-sandbox/home:$HOME
---workdir $MYSCRATCH/ai-sandbox/work
---pwd $HOME
---env TERM=$TERM --env LANG=C.UTF-8
-```
-
-Launch log (`$MYSCRATCH/ai-sandbox/logs/<timestamp>.json`): timestamp, user, host, Slurm job id,
-runtime path and version, image path and sha256, mounts file path, resolved bind table, agent,
-write/payload paths, command, dry-run flag.
+Each launch writes `$MYSCRATCH/ai-sandbox/logs/<timestamp>-<pid>.json`: time, user, host, Slurm
+job id, wrapper and runtime versions, host OS, rootfs, mounts files, writable paths, bind table,
+full command. The log lives in writable scratch, so it is a record, not tamper-proof evidence.
 
 ## 11. Lua module
 
-Thin, following `LieberInstitute/jhpce_module_config` conventions (hostname guard, `LmodMessage`
-on load/unload):
-
-```lua
-local root = "/jhpce/shared/libd/core/libd_ai_sandbox/0.1"
-prepend_path("PATH", pathJoin(root, "bin"))
-setenv("LIBD_AI_SANDBOX_ROOT", root)
-setenv("LIBD_AI_SANDBOX_IMAGE", pathJoin(root, "images", "libd-ai-rocky9.sif"))
-setenv("LIBD_AI_SANDBOX_MOUNTS", pathJoin(root, "etc", "mounts.tsv"))
-setenv("LIBD_AI_SANDBOX_RUNTIME", "/jhpce/shared/jhpce/core/singularity/3.11.4/bin/singularity")
-```
-
-Developed and tested from this repository (`modulefiles/`) with `module use` before being
-committed to the LieberInstitute repositories.
+`modulefiles/libd_ai_sandbox/0.1.lua` (development): derives its root from its own location,
+prepends `bin` to `PATH`, sets `LIBD_AI_SANDBOX_ROOT` and `LIBD_AI_SANDBOX_RUNTIME`, and guards
+against an unset `HOSTNAME`. For deployment the root becomes an explicit
+`/jhpce/shared/libd/core/libd_ai_sandbox/<ver>` path in `jhpce_module_config`.
 
 ## 12. Open questions
 
-- Which additional lab exports beyond `*/lieber` should ship in the default mounts file?
-- Should `--write-same-path` be the default when the user is inside a project directory?
-- Does Lmod inside the container reproduce the compute-node environment closely enough, or is a
-  fat image needed anyway for Python (the shared conda has no `anndata`/`h5py`)?
-- Does Codex's Landlock sandbox function inside the setuid-started container?
-- Where should the agent CLIs live: per-user installs or `/jhpce/shared/libd`?
+- Which lab exports beyond `*/lieber` belong in the default mounts file?
+- Expose the real `~/R/<ver>` and `~/.local` read-only so personal packages work?
+- Carry the host shell's loaded modules into the session?
+- Validate the host-root container under SingularityCE 4.5.1 `--userns` as a fallback.
+- Does Codex's own Landlock sandbox work inside the container?
+- Where should agent CLIs live: per-user installs or `/jhpce/shared/libd`?

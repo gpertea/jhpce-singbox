@@ -1,0 +1,26 @@
+# libd-ai-sandbox read-only mounts.
+#
+# Columns (whitespace separated): src  dest  mode  required
+#   mode      must be "ro"; writable paths come only from the command line (--write)
+#   required  yes = abort if src is missing; no = skip with a warning
+#
+# Every src must be a real mount point or lie inside one, and nothing may be
+# mounted below it: a read-only bind protects exactly one filesystem. Never list an
+# autofs map root such as /dcs04; list the exports under it (/dcs04/lieber).
+# The wrapper checks this against /proc/mounts at every launch.
+
+# --- host system: makes the sandbox look like the node it runs on ------------
+/usr                    /usr                    ro  yes
+/etc                    /etc                    ro  yes
+/opt                    /opt                    ro  yes
+/var/lib/sss            /var/lib/sss            ro  yes   # SSSD sockets: user and group names
+/var/lib/alternatives   /var/lib/alternatives   ro  no
+
+# --- shared software and module trees ---------------------------------------
+/jhpce/shared           /jhpce/shared           ro  yes
+
+# --- LIBD storage --------------------------------------------------------------
+/dcs04/lieber           /dcs04/lieber           ro  no
+/dcs05/lieber           /dcs05/lieber           ro  no
+/dcs07/lieber           /dcs07/lieber           ro  no
+# /dcs06/lieber and /dcs10/lieber do not exist on current nodes

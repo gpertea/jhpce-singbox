@@ -106,3 +106,19 @@ one home, which is one more reason never to bind the real home.
    `/run/munge` must never be bound.
 5. Record `sha256sum` of the SIF and `singularity sif list` in the launch log; neither runtime
    prints a digest on `exec`.
+
+## Host-root container (2026-10-07)
+
+- `singularity exec ... /` fails: `FATAL: / as sandbox is not authorized`.
+- A skeleton directory as the container with host `/usr /etc /opt` bound read-only works under
+  SCE 3.11.4. Without `/var/lib/sss` bound, user lookups fail (`id: cannot find name`), the site
+  profile computes `MYSCRATCH` from the numeric uid, and startup takes ~15 s on lookup timeouts.
+  With it bound, names resolve and startup is 0.2 s bare, 1.0 s with a login shell.
+- Inside: site profile runs, `JHPCE_ROCKY9_DEFAULT_ENV` and `JHPCE_tools/3.0` load,
+  `module load conda_R/4.5.x` then `library(SummarizedExperiment)` works.
+- Slurm clients fail without `/run/munge` (`squeue: error: If munged is up...`); `sudo` fails
+  (`nosuid`). A file bind of a deny script over `/usr/bin/sbatch` inside the ro `/usr` bind works.
+- Lmod shell functions break under `set -u`; scripts run inside must not set it before `module`.
+- `readlink -f` / `stat` on an unmounted autofs entry (`/dcs07/lieber` on a fresh compute node)
+  does not trigger the automount; the wrapper's check then sees the autofs map. Listing
+  `"$path/."` triggers it. Verified on compute-092 with `/dcs07/lieber` initially unmounted.

@@ -38,32 +38,35 @@ user did not designate?
 
 ## Operating principles
 
-1. **Read-only by default, kernel-enforced.** LIBD/JHPCE exports are bind-mounted `ro`.
-   Writable paths come only from the command line, never from the mounts file.
+1. **Read-only by default, kernel-enforced.** Host system dirs, `/jhpce/shared` and the LIBD
+   exports are bind-mounted `ro`. Writable: `$MYSCRATCH` (default), the synthetic home, scratch
+   `/tmp`, and each `--write PATH`. Writable paths come only from the command line, never from a
+   mounts file.
 2. **Bind real mount points, never autofs roots.** A read-only bind protects exactly one
    filesystem; mounts nested below it keep their own flags. Binding `/dcs04` ro left
-   `/dcs04/lieber` writable (measured). The wrapper verifies this from `/proc/mounts` and aborts
-   on violation.
+   `/dcs04/lieber` writable (measured). The wrapper triggers automounts, checks `/proc/mounts`,
+   and aborts on violation.
 3. **Synthetic home, not the real home.** `$HOME` keeps its real path inside, backed by
    `$MYSCRATCH/ai-sandbox/home`. Always pass `--home`; under `--contain` without it the real home
    is mounted read-write (measured).
-4. **Writable targets pre-exist and are checked.** The wrapper creates `--write` targets itself,
-   refuses targets that are or contain a read-only root, and refuses non-empty targets without
-   the wrapper's marker file unless forced. The runtime must never create a mount point on host
-   storage (measured to happen for same-path targets).
-5. **No scheduler or remote-shell escape.** `sbatch`/`srun`/`salloc`/`scancel`/`ssh`/`scp`/`rsync`
-   are absent from the image; `/run/munge` and `~/.ssh` are never mounted.
+4. **Write targets must already exist and are checked.** `--write` refuses `/`, system and
+   `/jhpce/shared` paths, the real home, whole filesystems, read-only mount roots and their
+   ancestors. The runtime must never create a mount point on host storage (measured to happen).
+5. **No scheduler or remote-shell escape.** Host `sbatch`/`srun`/`salloc`/`scancel`/`scontrol`/
+   `ssh`/`scp`/`sftp` are masked by a deny script (`etc/deny-commands.txt`); `/run/munge` and
+   `~/.ssh` are never mounted.
 6. **Scratch-backed tmp.** Always pass `--workdir`; the runtime's default `/tmp` is a 64 MB tmpfs.
-7. **Thin image, host software.** Rocky 9 plus basic userland (`which`, `hostname`, …) and Lmod;
-   R/Python/Node come from the read-only `/jhpce/shared` bind.
-8. **Runtime-agnostic, SingularityCE 3.11.4 by default.** Setuid is not needed for safety;
-   3.11.4 is preferred for speed and correct group display. SingularityCE 4.5.1 `--userns` is the
-   supported fallback; Apptainer 1.5.3 works but is slow without squashfuse. Call runtimes by
-   absolute path; the modulefiles fail in non-interactive shells.
-9. **Inspectable.** `--dry-run` prints the exact command; every launch is logged with image
-   sha256, bind table, user, host, command.
-10. **Tests before features.** Each phase in `docs/implementation_plan.md` names its tests. Tests
-    that attempt writes to read-only paths must check the host afterwards and remove any leak.
+7. **Host-root container, no image.** The container root is an empty skeleton directory with the
+   host's `/usr`, `/etc`, `/opt` and SSSD sockets bound read-only, so the environment, Lmod and
+   modules match the node exactly. Do not reintroduce a built image without a measured reason.
+8. **SingularityCE 3.11.4 by absolute path.** Setuid is not needed for safety; 3.11.4 is preferred
+   for speed and correct group display. Call runtimes by absolute path; the site runtime
+   modulefiles fail in non-interactive shells.
+9. **Inspectable.** `--dry-run` prints the bind table and exact command; every launch is logged as
+   JSON under `$MYSCRATCH/ai-sandbox/logs`.
+10. **Tests before features.** `tests/test_wrapper.sh` must pass on a transfer node and on a
+    compute node. Tests that attempt writes to read-only paths check the host afterwards and
+    remove any leak.
 
 ## Working style
 
@@ -76,12 +79,14 @@ user did not designate?
   `LmodMessage`). Develop under `modulefiles/` here with `module use` before committing to the
   LieberInstitute repositories (`/jhpce/shared/libd/modulefiles`, `/jhpce/shared/libd/core`).
 
-## Default invocation (target)
+## Default invocation
 
 ```bash
-module load libd_ai_sandbox
-libd-ai-sandbox --agent codex --write /dcs04/lieber/<project>/agent_outputs/$USER/run_001
+module use /dcs04/lieber/lcolladotor/dbDev_LIBD001/jhpce-singbox/modulefiles   # development
+module load libd_ai_sandbox/0.1
+libd-ai-sandbox --dry-run --write /dcs04/lieber/<lab>/<project>/agent_out
+libd-ai-sandbox --write /dcs04/lieber/<lab>/<project>/agent_out
 ```
 
-Inside the container the durable output appears at `/agent_out`; everything under
-`/dcs*/lieber` and `/jhpce/shared` is read-only.
+Inside, paths are identical to the host; only `$MYSCRATCH`, the synthetic home, `/tmp` and the
+`--write` directories are writable (listed in `$LIBD_AI_SANDBOX_RW`).

@@ -1,0 +1,3 @@
+#!/bin/sh
+echo "libd-ai-sandbox: '$(basename "$0")' is disabled inside the sandbox (it could start processes outside it)." >&2
+exit 126
