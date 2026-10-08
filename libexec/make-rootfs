@@ -23,4 +23,9 @@ mkdir -p usr etc opt proc sys dev run tmp root var/tmp var/lib/sss var/lib/alter
 mkdir -p etc
 for f in passwd group hosts localtime resolv.conf; do : > "etc/$f"; done
 chmod -R a+rX,go-w "$DEST"
-echo "rootfs skeleton ready: $DEST"
+# An always-empty folder, mounted read-only over places that must look empty inside
+# (e.g. ~/.ssh when the real home is used).
+EMPTY=$(dirname "$DEST")/empty
+mkdir -p "$EMPTY"
+chmod 555 "$EMPTY"
+echo "rootfs skeleton ready: $DEST (empty mask: $EMPTY)"

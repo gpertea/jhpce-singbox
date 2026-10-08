@@ -34,6 +34,9 @@ writable_probe_dir() {   # a host dir the user can write under $1
     [ -n "$d" ] && echo "$d"
 }
 
+echo "== help"
+out=$("$SBX" --help 2>&1) && [[ "$out" == *"--home-mode"* ]] && ok "--help works" || bad "--help :: $out"
+
 echo "== refusals (no container started)"
 WT=$REPO/tests/.sbx_write_target
 mkdir -p "$WT"
@@ -237,11 +240,17 @@ echo "== live: --home-mode real-ro"
 OUT=$("$SBX" --quiet --home-mode real-ro -- bash -c '
 r() { printf "%s\t%s\n" "$1" "$2"; }
 r home "$HOME"; [ -f ~/.bashrc ] && r real_bashrc yes || r real_bashrc no
+r ssh_entries "$(ls -A ~/.ssh 2>/dev/null | wc -l)"
 echo x > ~/'"$TAG"' 2>/dev/null && r home_write LEAK || r home_write blocked
 for m in $(awk -v h="$HOME/" "index(\$2,h)==1{print \$2}" /proc/mounts); do
   echo x > "$m/'"$TAG"'" 2>/dev/null && r "nested:$m" LEAK || r "nested:$m" blocked
 done' 2>&1)
 [ "$(get home)" = "$REAL_HOME" ] && [ "$(get real_bashrc)" = yes ] && ok "real home visible at \$HOME" || bad "real-ro home :: $OUT"
+if [ -d "$REAL_HOME/.ssh" ]; then
+    [ "$(get ssh_entries)" = 0 ] && ok "~/.ssh hidden in real-home mode" || bad "~/.ssh visible in real-ro: $(get ssh_entries) entries"
+fi
+out=$("$SBX" --print-binds --home-mode real-rw 2>&1)
+[[ "$out" == *"$REAL_HOME/.ssh   [hide ~/.ssh]"* ]] || [ ! -d "$REAL_HOME/.ssh" ] && ok "~/.ssh hidden in real-rw mode" || bad "real-rw ~/.ssh :: $out"
 [ "$(get home_write)" = blocked ] && [ ! -e "$REAL_HOME/$TAG" ] && ok "real home not writable" || { bad "real home WRITABLE"; [ -e "$REAL_HOME/$TAG" ] && unlink "$REAL_HOME/$TAG"; }
 while IFS=$'\t' read -r k v; do
     [[ "$k" == nested:* ]] || continue

@@ -155,8 +155,9 @@ Writable paths are printed at startup, recorded in the launch log, and exported 
   (`conda_R/*/bin/ssh` is on `PATH` after `module load conda_R`; `paramiko` in the shared Python
   modules). The real barrier is that no login credential is visible inside (no `~/.ssh`, agent
   forwarding off): measured, an ssh from inside to another node fails with `Permission denied`.
-  Nothing may put a passwordless login key inside the sandbox: `.ssh` is never seeded or
-  mounted, agent forwarding is off, and the planned `--sshd` mode uses a dedicated host key and
+  Nothing may put a passwordless login key inside the sandbox: `.ssh` is never seeded,
+  in `--home-mode real-ro|real-rw` the real `~/.ssh` is masked by an empty read-only folder
+  (`share/empty`), agent forwarding is off, and the planned `--sshd` mode uses a dedicated host key and
   refuses any key listed in `authorized_keys` (`docs/positron_remote_plan.md`).
 - `rsync` stays available for local copies; remote rsync needs ssh and a key.
 - In `--home-mode real-rw` the agent can edit dotfiles (`~/.bashrc`, `~/.ssh/authorized_keys`)

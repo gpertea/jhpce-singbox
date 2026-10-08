@@ -115,12 +115,18 @@ Per-user customization ($CONFIG_DIR):
 
 Environment:
   LIBD_AI_SANDBOX_HOME          synthetic home location [$SBX_HOME]
-  LIBD_AI_SANDBOX_HOME_MODE     default --home-mode [$HOME_MODE]
+  LIBD_AI_SANDBOX_HOME_MODE     default --home-mode [synthetic]
   LIBD_AI_SANDBOX_CONFIG_DIR    per-user config dir [$CONFIG_DIR]
   LIBD_AI_SANDBOX_RUNTIME       runtime binary [$RUNTIME]
   LIBD_AI_SANDBOX_MOUNTS        site read-only mounts file [$MOUNTS]
   LIBD_AI_SANDBOX_MOUNTS_EXTRA  one more mounts file (same format)
   LIBD_AI_SANDBOX_ROOTFS        skeleton root directory [$ROOTFS]
+  LIBD_AI_SANDBOX_STATE         per-user state: home, logs, agent folders [$STATE]
+  LIBD_AI_SANDBOX_DENY          list of host commands masked inside [$DENY_LIST]
+  LIBD_AI_SANDBOX_CODEX         codex CLI to mount (default: 'codex' on PATH)
+  LIBD_AI_SANDBOX_CLAUDE        claude CLI to mount (default: 'claude' on PATH)
+  LIBD_AI_SANDBOX_ROOT          install root (default: derived from this script)
+  LIBD_AI_SANDBOX_ANY_HOST      set to skip the compute/transfer node check (testing)
 EOF
 }
 
@@ -428,6 +434,14 @@ case "$HOME_MODE" in
         HOME_ARGS=(--home "$REAL_HOME")
         ;;
 esac
+# With the real home visible, hide ~/.ssh: a passwordless login key there would let
+# any process ssh to another node, outside the sandbox (ssh clients exist inside,
+# e.g. conda_R's). Masked with an empty read-only folder.
+EMPTY_DIR=$(dirname "$ROOTFS")/empty
+if [ "$HOME_MODE" != synthetic ] && [ -e "$REAL_HOME/.ssh" ]; then
+    [ -d "$EMPTY_DIR" ] || die "empty mask folder missing: $EMPTY_DIR (rerun $ROOT/libexec/make-rootfs)"
+    add_bind "$EMPTY_DIR" "$REAL_HOME/.ssh" ro "hide ~/.ssh"
+fi
 
 # Personal R and Python libraries of the real home, read-only, for synthetic mode.
 PERSONAL_R=""; PERSONAL_PY=""

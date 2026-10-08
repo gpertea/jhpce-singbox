@@ -22,8 +22,9 @@ tool.
 - [Agents: login, settings, permissions](#agents-login-settings-permissions)
 - [Your sandbox home and session setup](#your-sandbox-home-and-session-setup)
 - [Profiles and defaults](#profiles-and-defaults)
-- [More options](#more-options)
+- [Option reference](#option-reference)
 - [Troubleshooting](#troubleshooting)
+- [Planned: sandboxed Positron / VS Code sessions](#planned-sandboxed-positron--vs-code-sessions)
 - [Reference](#reference)
 
 ## Quick start
@@ -229,7 +230,8 @@ sandbox home whenever missing there.
 
 **Real home instead.** `--home-mode real-ro` uses your real home read-only.
 `--home-mode real-rw` makes it writable; the agent could then change files such as
-`~/.bashrc` that your normal logins run, so use it only if you accept that.
+`~/.bashrc` that your normal logins run, so use it only if you accept that. In both
+modes `~/.ssh` appears empty inside, so your login keys stay out of reach.
 
 ## Profiles and defaults
 
@@ -257,22 +259,89 @@ Command-line options win over profiles, which win over the defaults.
 Extra read-only storage for every session can be listed in
 `~/.config/libd-ai-sandbox/mounts.tsv` (same format as the module's `etc/mounts.tsv`).
 
-## More options
+## Option reference
 
-```text
---read PATH          make another folder visible, read-only (repeatable)
---module NAME        load a module at session start (repeatable)
---cmd 'COMMAND'      run one shell command instead of an interactive shell
--- CMD ARGS          run a program (or, with --agent, pass arguments to the agent)
---no-scratch         do not make $MYSCRATCH writable
---reset-home         archive the sandbox home and start fresh
---print-binds        show the mount table
---quiet              no startup banner
---help               all options and environment variables
-```
+`libd-ai-sandbox --help` prints the same list with your actual paths.
 
-Every launch is logged as JSON in `~/.libd-ai-sandbox/logs/` (time, node, job id,
-mounts, writable folders, command).
+### Command-line options
+
+| Option | Effect |
+|---|---|
+| `--write PATH` | make an existing folder writable at its own path (repeatable). Refused: missing folders, whole filesystems or storage roots, system paths, `/jhpce/shared`, your real home or its parents, folders with other filesystems mounted inside |
+| `--read PATH` | make a folder visible read-only at its own path (repeatable) |
+| `--no-scratch` | do not make `$MYSCRATCH` writable (sandbox home, `/tmp` and cache stay writable) |
+| `--profile NAME` | apply `profiles/NAME.conf` (repeatable, applied in order) |
+| `--list-profiles` | list user and site profiles with their descriptions |
+| `--module NAME` | load a module at session start, after the JHPCE defaults (repeatable) |
+| `--no-personal-libs` / `--personal-libs` | hide / show your real `~/R` and `~/.local/lib` read-only (synthetic home only; default shown) |
+| `--home-mode synthetic` | default: `$HOME` is the separate sandbox home |
+| `--home-mode real-ro` | `$HOME` is your real home, read-only; `~/.ssh` appears empty |
+| `--home-mode real-rw` | `$HOME` is your real home, writable (the agent can change your dotfiles); `~/.ssh` appears empty |
+| `--cmd 'COMMAND'` | run one shell command (login shell) instead of an interactive shell |
+| `-- CMD ARGS...` | run a program; with `--agent`, pass arguments to the agent |
+| `--agent shell\|codex\|claude` | what to start (default `shell`) |
+| `--yolo` | start the agent without its own permission prompts |
+| `--codex-seed DIR` / `--claude-seed DIR` | copy agent settings from `DIR` into the sandbox's agent folder |
+| `--seed-credentials` | also copy the agent logins (shared refresh token) |
+| `--reseed` | overwrite previously seeded files |
+| `--reset-home` | archive the sandbox home as `home.<timestamp>` and start fresh |
+| `--dry-run` | check everything, print the mount table and the command, start nothing, create nothing |
+| `--print-binds` | print the mount table only |
+| `--quiet`, `-q` | no startup banner or warnings |
+| `--version`, `--help` | |
+
+### Files
+
+| Location | Purpose |
+|---|---|
+| `~/.config/libd-ai-sandbox/config` | your defaults (`key = value`) |
+| `~/.config/libd-ai-sandbox/profiles/NAME.conf` | your profiles |
+| `~/.config/libd-ai-sandbox/mounts.tsv` | extra read-only mounts for every session (`src dest ro yes\|no`) |
+| `~/.config/libd-ai-sandbox/skel/` | template files copied into the sandbox home when missing |
+| `~/.libd-ai-sandbox/home/` | the sandbox home (`$HOME` inside) |
+| `~/.libd-ai-sandbox/logs/` | one JSON record per launch |
+| `~/.libd-ai-sandbox/agents/` | agent config folders when a real home is used |
+| `$MYSCRATCH/ai-sandbox/work/`, `.../cache/` | `/tmp` and caches |
+| `<module>/etc/mounts.tsv`, `etc/deny-commands.txt`, `etc/profiles/` | site settings |
+
+### Keys in `config` and profiles
+
+| Key | Values | In `config` | In profiles |
+|---|---|---|---|
+| `description` | text | no | yes |
+| `module` | module name (repeatable) | yes | yes |
+| `read` | absolute path (repeatable) | yes | yes |
+| `write` | absolute path (repeatable) | **no** | yes |
+| `home_mode` | `synthetic`, `real-ro`, `real-rw` | yes | yes |
+| `scratch` | `yes`, `no` | yes | yes |
+| `personal_libs` | `yes`, `no` | yes | yes |
+| `agent` | `shell`, `codex`, `claude` | yes | yes |
+| `codex_seed`, `claude_seed` | folder | yes | yes |
+| `seed_credentials` | `yes`, `no` | yes | yes |
+
+Values may use `~`, `$HOME`, `$USER`, `$MYSCRATCH`. Precedence for single values:
+`config` < environment < profiles < command line. `module`, `read`, `write` add up.
+
+### Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `LIBD_AI_SANDBOX_HOME` | `~/.libd-ai-sandbox/home` | sandbox home location |
+| `LIBD_AI_SANDBOX_HOME_MODE` | `synthetic` | default `--home-mode` |
+| `LIBD_AI_SANDBOX_STATE` | `~/.libd-ai-sandbox` | home, logs, agent folders |
+| `LIBD_AI_SANDBOX_CONFIG_DIR` | `~/.config/libd-ai-sandbox` | your configuration folder |
+| `LIBD_AI_SANDBOX_MOUNTS` | `<module>/etc/mounts.tsv` | site read-only mounts |
+| `LIBD_AI_SANDBOX_MOUNTS_EXTRA` | none | one more mounts file |
+| `LIBD_AI_SANDBOX_DENY` | `<module>/etc/deny-commands.txt` | host commands masked inside |
+| `LIBD_AI_SANDBOX_CODEX`, `LIBD_AI_SANDBOX_CLAUDE` | `codex`/`claude` on `PATH` | agent programs to mount |
+| `LIBD_AI_SANDBOX_RUNTIME` | SingularityCE 3.11.4 | container runtime binary |
+| `LIBD_AI_SANDBOX_ROOTFS` | `<module>/share/rootfs` | container root skeleton |
+| `LIBD_AI_SANDBOX_ROOT` | the module folder | install root |
+| `LIBD_AI_SANDBOX_ANY_HOST` | unset | skip the node check (testing only) |
+
+Inside the sandbox: `LIBD_AI_SANDBOX` (version), `LIBD_AI_SANDBOX_RW` (writable paths,
+colon-separated), `LIBD_AI_SANDBOX_HOME_MODE`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`,
+`XDG_CACHE_HOME`.
 
 ## Troubleshooting
 
@@ -289,11 +358,39 @@ mounts, writable folders, command).
 
 ## Planned: sandboxed Positron / VS Code sessions
 
-A session script that runs the remote `sshd` inside the sandbox, so Positron, its
-terminals, R and the Posit Assistant all work under the same rules. It uses its own
-dedicated host key (never your `~/.ssh/id_rsa`, which is a login key); add
-`HostKeyAlias libd-ai-sandbox-<user>` to your laptop's ssh entry so the key is accepted
-once for all jobs. Details: [docs/positron_remote_plan.md](docs/positron_remote_plan.md).
+Not implemented yet; design in [docs/positron_remote_plan.md](docs/positron_remote_plan.md).
+A shipped sbatch template will run the remote `sshd` inside the sandbox, so Positron, its
+terminals, R and the Posit Assistant all work under the same rules, with the writable
+folders chosen in the script.
+
+What to expect on your laptop:
+
+- **Logins** keep working without prompts: your existing keys are accepted as today.
+- **Host key.** The sandboxed sshd has its own host key, created once and kept in
+  `~/.libd-ai-sandbox/sshd/`. It is not your `~/.ssh/id_rsa`: that key logs in to every
+  JHPCE node, and an sshd host key is readable by everything inside the sandbox.
+- **Why an alias is needed.** `known_hosts` stores keys per host *and* port. Each job
+  lands on a different node and port, so even a stable key would look new every time,
+  and Positron cannot answer a host-key prompt. Add to the ssh host entry you use for
+  these sessions:
+
+  ```text
+  HostKeyAlias libd-ai-sandbox-<user>
+  ```
+
+  Then run one manual `ssh` to the first sandboxed session to accept the key. Every later
+  job, on any node and port, matches without a prompt.
+- **Keep sandboxed and unsandboxed entries apart.** Your current script uses `id_rsa` as
+  the host key. Use a separate ssh host entry (with the alias) for sandboxed sessions,
+  otherwise the two keys collide under one name.
+- **If the sandbox host key changes** (deleted, regenerated), ssh refuses with
+  `REMOTE HOST IDENTIFICATION HAS CHANGED`. Remove the old entry once:
+  `ssh-keygen -R libd-ai-sandbox-<user>`, then connect manually again.
+- If your ssh entry already disables host-key checking for compute nodes
+  (`StrictHostKeyChecking no`, `UserKnownHostsFile /dev/null`), nothing changes, at the
+  cost of not detecting a wrong host.
+- Positron installs a fresh server into the sandbox home (about 0.8 GB), separate from
+  the one in your real home. Folders you edit in Positron must be writable in that job.
 
 ## Reference
 

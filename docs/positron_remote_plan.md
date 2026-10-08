@@ -146,6 +146,21 @@ The `scontrol` call runs on the host, before the container; inside, Slurm is una
   possible `--pid` option, not a default.
 - `AllowAgentForwarding no` stays: a forwarded laptop agent is the same escape as a visible key.
 
+## Client usability (host keys and aliases)
+
+| Situation | Behaviour | Remedy |
+|---|---|---|
+| first sandboxed session | unknown host key; Positron cannot prompt and fails | one manual `ssh` to the session, accept the key |
+| later jobs, other node/port | `known_hosts` is keyed by host:port, so a new entry would be needed each time | `HostKeyAlias libd-ai-sandbox-<user>` in the laptop's ssh host entry: one entry for all jobs |
+| same ssh host entry used for the old unsandboxed script (`-h ~/.ssh/id_rsa`) | two different host keys under one alias: mismatch error | separate host entries for sandboxed and unsandboxed sessions |
+| host key regenerated (`~/.libd-ai-sandbox/sshd/` deleted) | `REMOTE HOST IDENTIFICATION HAS CHANGED` | `ssh-keygen -R libd-ai-sandbox-<user>`, reconnect manually |
+| client already uses `StrictHostKeyChecking no` + `UserKnownHostsFile /dev/null` for nodes | works, no prompts | none (but no host verification) |
+| several sandboxed jobs at once | same key, same alias | none |
+
+The host key lives in `~/.libd-ai-sandbox/sshd/`, outside the sandbox home, so `--reset-home`
+does not change it. Positron's Remote-SSH uses the laptop's normal ssh configuration, so the
+alias applies to it.
+
 ## Open questions
 
 - Copy all of `~/.ssh/authorized_keys`, or only keys marked for the sandbox
