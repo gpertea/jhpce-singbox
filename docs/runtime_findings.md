@@ -131,3 +131,13 @@ one home, which is one more reason never to bind the real home.
   empty directory. The skeleton now omits storage roots; such links are broken, as they should be.
 - Codex's bwrap sandbox fails inside SCE 3.11.4: `bwrap: Can't bind mount /oldroot/ on /newroot/:
   Unable to mount source on destination: Invalid argument`.
+
+## sshd inside the sandbox (2026-10-07)
+
+- Non-root `/usr/sbin/sshd -D` (OpenSSH 8.7p1) runs inside the host-root container; publickey
+  login, sessions inside the sandbox (ro storage, synthetic home, modules), stdin bootstrap
+  scripts and `ssh -L` forwarding all work. Details: `docs/positron_remote_plan.md`.
+- sshd discards container `--env` variables; `SetEnv` and `ForceCommand` in sshd_config work.
+- `UsePAM no` logs "not supported in RHEL" (harmless for a non-root sshd).
+- Without `--pid`, a background process started in the container survives the container's exit;
+  with `--pid` it does not.

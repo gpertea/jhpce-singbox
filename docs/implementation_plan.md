@@ -17,6 +17,7 @@ Measured facts: `docs/runtime_findings.md`. Test suite: `tests/test_wrapper.sh`.
 | 7 | Non-setuid fallback: host-root container under SCE 4.5.1 `--userns` | open |
 | 8 | Codex and Claude modes | done (launch, args, `--yolo`); interactive login to be exercised by a user |
 | 9 | Deliberate negative tests through an agent | open |
+| 12 | Sandboxed Positron/VS Code remote sessions (`--sshd`), see `docs/positron_remote_plan.md` | planned, feasibility verified |
 | 10 | Metadata inspectors | optional |
 | 11 | README, deployment to `/jhpce/shared/libd` and `jhpce_module_config` | open |
 
