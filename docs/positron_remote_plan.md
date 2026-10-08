@@ -115,24 +115,29 @@ The `scontrol` call runs on the host, before the container; inside, Slurm is una
 
 - **Shipped command/template.** `bin/libd-ai-positron-session` is an sbatch script the user copies
   and adapts (resources, profile or `--write` folders). `--sshd` stays a wrapper option.
-- **Client side must not prompt.** Positron expects the connection to work without prompts.
-  Passwordless login already works (the user's public keys). The host key is the only new
-  element: keep it persistent (in `~/.libd-ai-sandbox/sshd/`, durable home storage) so a single
-  manual `ssh` from the laptop settles it, or keep the client's existing host-key settings
-  for compute nodes (ports are random per job today, so most setups already skip pinning).
-- **Host key: `--sshd-host-key FILE` (config key `sshd_host_key`).** The user prefers reusing
-  `~/.ssh/id_rsa`, which keeps the client side exactly as today. Measured consequence, recorded
-  so the choice is informed: that key has no passphrase and is in `~/.ssh/authorized_keys`, so
-  it logs into every JHPCE node (verified: `ssh -i ~/.ssh/id_rsa transfer-01` succeeds).
-  An sshd host key must be readable by the sshd process, i.e. by every process in the sandbox.
-  Inside the sandbox an `ssh` client is available despite the deny list (`conda_R/*/bin/ssh` is
-  on `PATH` after `module load conda_R`; `paramiko` is in the shared Python modules). Today an
-  ssh from inside fails only because no key is visible (verified: `Permission denied
-  (publickey,...)`). With `id_rsa` mounted, an agent that "works around" the disabled `sbatch`
-  by ssh-ing to another node would land outside the sandbox with full write access.
-  Default therefore: a dedicated host key generated once; `--sshd-host-key ~/.ssh/id_rsa` is
-  available for users who accept that, and the wrapper prints a warning when the host key is
-  also listed in `authorized_keys`.
+- **Host key: dedicated, decided.** The sandbox sshd uses its own host key, generated once
+  (`ssh-keygen -t ed25519`, no passphrase) at `~/.libd-ai-sandbox/sshd/ssh_host_ed25519_key` and
+  kept. It is used for nothing else, so being readable inside the sandbox is harmless.
+  `--sshd-host-key FILE` may point at another dedicated key, but the wrapper **refuses** a key
+  whose public half is listed in `~/.ssh/authorized_keys`. Reason (measured): such a key is a
+  passwordless login to every JHPCE node (`ssh -i ~/.ssh/id_rsa transfer-01` logs in without a
+  prompt), an sshd host key must be readable by every process in the sandbox, and ssh clients
+  exist inside despite the deny list (`conda_R/*/bin/ssh` on `PATH` after `module load
+  conda_R`; `paramiko` in the shared Python modules). Today an ssh from inside fails only
+  because no key is visible (`Permission denied (publickey,...)`); the user's `~/.ssh/id_rsa`
+  as host key would undo that.
+- **No prompts on the client.** Positron expects a connection without prompts. Logins already
+  use the user's keys. For the host key, the laptop's `known_hosts` is keyed by host *and* port,
+  and both change with every job, so a stable key alone is not enough. Add one line to the
+  laptop's ssh host entry used for these sessions:
+
+  ```text
+  HostKeyAlias libd-ai-sandbox-<user>
+  ```
+
+  Then one manual `ssh` to the first sandboxed session records the key under that alias, and
+  every later job (any node, any port) matches it without a prompt. Setups that already skip
+  host-key checking for compute nodes need no change.
 - **`--pid` is not needed for the sbatch session.** A PID namespace gives the container its own
   process tree; when its first process exits, the kernel ends every other process in it. In a
   Slurm job, ending the job already kills all of its processes, so the template does not need
@@ -153,4 +158,6 @@ The `scontrol` call runs on the host, before the container; inside, Slurm is una
 Start `--sshd` on a free localhost port with a throwaway client key, then over ssh: synthetic
 home, ro write fails, `$LIBD_AI_SANDBOX_RW` present (SetEnv), modules from the profile loaded,
 agent CLIs on `PATH`, sbatch denied, local forward works, agent forwarding refused, and no
-process left after the sandbox is stopped.
+process left after the sandbox is stopped. Refusals: `--sshd-host-key` pointing at a key listed
+in `authorized_keys`; `--sshd` without a port. The host key is created once and reused (same
+fingerprint across launches).

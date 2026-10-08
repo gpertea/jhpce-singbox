@@ -105,7 +105,9 @@ Wrapper changes:
 ## 6. Positron / VS Code remote sessions
 
 See `docs/positron_remote_plan.md`: `--sshd PORT`, generated sshd config with `SetEnv` and
-`ForceCommand`, `bin/libd-ai-positron-session` as an adaptable sbatch template.
+`ForceCommand`, `bin/libd-ai-positron-session` as an adaptable sbatch template, a dedicated
+persistent host key (keys listed in `authorized_keys` are refused), `HostKeyAlias` on the client.
+Tests: refusal of a login key as host key; a session over the alias needs no prompt.
 
 ## 7. Hardening and options, as needed
 

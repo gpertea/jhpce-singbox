@@ -72,6 +72,13 @@ needs it.
 Also disabled inside: `sbatch`, `srun`, `salloc`, `scancel`, `scontrol`, `ssh`, `scp`,
 `sftp`. They could start work outside the sandbox. Local `rsync` and `cp` work.
 
+**Keep login keys out of the sandbox.** What really stops an agent from leaving the
+sandbox over ssh is that no login key is visible inside (your real `~/.ssh` is not
+mounted). Other ssh clients do exist inside, for example the one in `conda_R`. Do not
+copy `~/.ssh` into the sandbox home, do not `--read` it, and do not forward your ssh
+agent into a sandboxed session: any passwordless key there lets a process log in to
+another node with your full write access.
+
 ## Writing into a folder inside read-only storage
 
 Yes: `--write` makes one existing folder writable, at its own path, while everything
@@ -279,6 +286,14 @@ mounts, writable folders, command).
 | `sbatch is disabled inside the sandbox` | by design; run jobs from outside |
 | `module: command not found` in a script | run it with `bash -l`, or via `--cmd` |
 | R or the agent killed for memory | ask `srun` for more `--mem` |
+
+## Planned: sandboxed Positron / VS Code sessions
+
+A session script that runs the remote `sshd` inside the sandbox, so Positron, its
+terminals, R and the Posit Assistant all work under the same rules. It uses its own
+dedicated host key (never your `~/.ssh/id_rsa`, which is a login key); add
+`HostKeyAlias libd-ai-sandbox-<user>` to your laptop's ssh entry so the key is accepted
+once for all jobs. Details: [docs/positron_remote_plan.md](docs/positron_remote_plan.md).
 
 ## Reference
 
