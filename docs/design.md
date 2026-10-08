@@ -151,7 +151,14 @@ Writable paths are printed at startup, recorded in the launch log, and exported 
   authenticate even if run from another path.
 - No ssh keys in the synthetic home; setuid binaries (`sudo`, `su`, `ssh-keysign`) are inert
   because the container is mounted `nosuid`.
-- `rsync` stays available for local copies; remote rsync needs `ssh`, which is masked.
+- The deny list is a convenience, not the barrier: other ssh clients are reachable inside
+  (`conda_R/*/bin/ssh` is on `PATH` after `module load conda_R`; `paramiko` in the shared Python
+  modules). The real barrier is that no login credential is visible inside (no `~/.ssh`, agent
+  forwarding off): measured, an ssh from inside to another node fails with `Permission denied`.
+  Anything that would put a passwordless login key inside the sandbox (seeding `.ssh`, using
+  `~/.ssh/id_rsa` as an sshd host key) removes that barrier and must be an explicit,
+  warned choice.
+- `rsync` stays available for local copies; remote rsync needs ssh and a key.
 - In `--home-mode real-rw` the agent can edit dotfiles (`~/.bashrc`, `~/.ssh/authorized_keys`)
   that *host* sessions later execute. That is an escape route by delay; it is why `real-rw` is
   opt-in and announced with a warning.

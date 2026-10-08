@@ -141,3 +141,14 @@ one home, which is one more reason never to bind the real home.
 - `UsePAM no` logs "not supported in RHEL" (harmless for a non-root sshd).
 - Without `--pid`, a background process started in the container survives the container's exit;
   with `--pid` it does not.
+
+## ssh escape routes (2026-10-07)
+
+- `conda_R/{4.3.x,4.4,4.4.x,4.5,4.5.x}/bin/ssh` exist; after `module load conda_R/4.5.x` inside the
+  sandbox `ssh` resolves there, not to the masked `/usr/bin/ssh`. `paramiko` is installed in
+  `/jhpce/shared/jhpce/core/python/{3.12.12,3.14.6}`.
+- Inside the sandbox (no `~/.ssh`), `ssh -o BatchMode=yes transfer-01 true` fails:
+  `Permission denied (publickey,gssapi-keyex,gssapi-with-mic,password,keyboard-interactive)`.
+- The author's `~/.ssh/id_rsa` has no passphrase and is in `~/.ssh/authorized_keys`; on the host,
+  `ssh -i ~/.ssh/id_rsa transfer-01` logs in without a prompt. Any key like that, if visible
+  inside, is a route out of the sandbox.

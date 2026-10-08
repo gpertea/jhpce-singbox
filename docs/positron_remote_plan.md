@@ -1,6 +1,6 @@
 # Plan: sandboxed Positron / VS Code remote sessions (draft, 2026-10-07)
 
-Status: **feasibility verified, not implemented.**
+Status: **feasibility verified, not implemented.** Decisions after review are listed below.
 
 ## Today
 
@@ -42,8 +42,8 @@ as the container command, with `--pid` so that ending the job (or sshd) ends eve
 
 Generated per launch under `~/.libd-ai-sandbox/sshd/` (host side, before start):
 
-- `ssh_host_ed25519_key`: created once, kept. A dedicated host key; the user's own private
-  key is never used as a host key.
+- `ssh_host_ed25519_key`: created once, kept (default). `--sshd-host-key FILE` overrides; see
+  the decisions below about `~/.ssh/id_rsa`.
 - `authorized_keys`: copied from the real `~/.ssh/authorized_keys` at each launch (public keys
   only; the real `~/.ssh` is never mounted). Optional `--sshd-authorized-keys FILE`.
 - `sshd_config`:
@@ -111,13 +111,40 @@ The `scontrol` call runs on the host, before the container; inside, Slurm is una
 - Editing project files in Positron is subject to the same rules: folders you edit must be
   `--write` targets (or in a profile). This is the point, but users should expect it.
 
+## Decisions and findings (2026-10-07, after review)
+
+- **Shipped command/template.** `bin/libd-ai-positron-session` is an sbatch script the user copies
+  and adapts (resources, profile or `--write` folders). `--sshd` stays a wrapper option.
+- **Client side must not prompt.** Positron expects the connection to work without prompts.
+  Passwordless login already works (the user's public keys). The host key is the only new
+  element: keep it persistent (in `~/.libd-ai-sandbox/sshd/`, durable home storage) so a single
+  manual `ssh` from the laptop settles it, or keep the client's existing host-key settings
+  for compute nodes (ports are random per job today, so most setups already skip pinning).
+- **Host key: `--sshd-host-key FILE` (config key `sshd_host_key`).** The user prefers reusing
+  `~/.ssh/id_rsa`, which keeps the client side exactly as today. Measured consequence, recorded
+  so the choice is informed: that key has no passphrase and is in `~/.ssh/authorized_keys`, so
+  it logs into every JHPCE node (verified: `ssh -i ~/.ssh/id_rsa transfer-01` succeeds).
+  An sshd host key must be readable by the sshd process, i.e. by every process in the sandbox.
+  Inside the sandbox an `ssh` client is available despite the deny list (`conda_R/*/bin/ssh` is
+  on `PATH` after `module load conda_R`; `paramiko` is in the shared Python modules). Today an
+  ssh from inside fails only because no key is visible (verified: `Permission denied
+  (publickey,...)`). With `id_rsa` mounted, an agent that "works around" the disabled `sbatch`
+  by ssh-ing to another node would land outside the sandbox with full write access.
+  Default therefore: a dedicated host key generated once; `--sshd-host-key ~/.ssh/id_rsa` is
+  available for users who accept that, and the wrapper prints a warning when the host key is
+  also listed in `authorized_keys`.
+- **`--pid` is not needed for the sbatch session.** A PID namespace gives the container its own
+  process tree; when its first process exits, the kernel ends every other process in it. In a
+  Slurm job, ending the job already kills all of its processes, so the template does not need
+  it. It only matters for interactive sandbox runs inside a longer allocation (leftover
+  background processes keep running, still confined, until the allocation ends). Left as a
+  possible `--pid` option, not a default.
+- `AllowAgentForwarding no` stays: a forwarded laptop agent is the same escape as a visible key.
+
 ## Open questions
 
-- Should `--pid` become the default for every sandbox session, not just `--sshd`? It makes
-  background processes started by an agent end with the session.
 - Copy all of `~/.ssh/authorized_keys`, or only keys marked for the sandbox
-  (e.g. a separate `~/.config/libd-ai-sandbox/authorized_keys`)?
-- Ship the sbatch script as a command (`libd-ai-positron-session`) or as an example to copy?
+  (e.g. `~/.config/libd-ai-sandbox/authorized_keys`)?
 - Does the Posit Assistant need anything beyond network access from the node? To verify in a
   real session.
 
