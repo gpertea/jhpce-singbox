@@ -61,8 +61,12 @@ The wrapper refuses to run anywhere but a compute or transfer node.
 ## 4. Host-root container: no image
 
 The container root is a **skeleton directory** (`share/rootfs`, made by `libexec/make-rootfs`):
-empty mount-point directories mirroring the host's top level plus the `bin -> usr/bin` style
-symlinks. The host's `/usr`, `/etc`, `/opt`, `/var/lib/sss` and `/var/lib/alternatives` are
+empty system mount points (`usr etc opt proc sys dev run tmp root var/...`) plus the host's
+`bin -> usr/bin` style symlinks. Storage roots are deliberately *not* in the skeleton: the
+runtime creates those that are bound, so a symlink into unmounted storage (`/dcl01/...`,
+another lab's `/dcs04/<lab>`) is broken inside rather than pointing at an empty placeholder
+folder, which a crawler would misreport as empty. Symlinks into mounted storage resolve as on
+the host because every mount keeps its host path. The host's `/usr`, `/etc`, `/opt`, `/var/lib/sss` and `/var/lib/alternatives` are
 bind-mounted **read-only** on top. Consequences:
 
 - The environment *is* the node's environment: same OS packages, same `/etc/profile.d`, same

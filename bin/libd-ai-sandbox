@@ -40,6 +40,7 @@ PROTECTED_PREFIXES=(/usr /etc /opt /var /boot /proc /sys /dev /run /jhpce/shared
 usage() {
     cat <<EOF
 Usage: $PROG [options] [-- command [args...]]
+User guide: $ROOT/README.md
 
 Starts a login shell (or the given command) in a container where LIBD/JHPCE storage
 is read-only. Writable: \$MYSCRATCH (unless --no-scratch), the synthetic home, /tmp,

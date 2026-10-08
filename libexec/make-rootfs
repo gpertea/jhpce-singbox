@@ -9,17 +9,16 @@ ROOT=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
 DEST=${1:-$ROOT/share/rootfs}
 mkdir -p "$DEST"
 cd "$DEST"
-# Mirror the host's top-level layout: directories become empty mount points,
-# symlinks (bin -> usr/bin, ...) are copied as symlinks.
+# Only system mount points and the host's top-level symlinks (bin -> usr/bin, ...).
+# Storage roots (/dcs04, /dcl01, ...) are deliberately absent: the runtime creates
+# the ones that are bound, and anything not bound stays missing. An empty
+# placeholder would make a symlink into unmounted storage look like an empty
+# folder instead of a broken link, which misleads a crawler.
 for e in /*; do
     n=${e#/}
-    if [ -L "$e" ]; then
-        ln -sfn "$(readlink "$e")" "$n"
-    elif [ -d "$e" ]; then
-        mkdir -p "$n"
-    fi
+    [ -L "$e" ] && ln -sfn "$(readlink "$e")" "$n"
 done
-mkdir -p var/tmp var/lib/sss var/lib/alternatives tmp run
+mkdir -p usr etc opt proc sys dev run tmp root var/tmp var/lib/sss var/lib/alternatives
 # Placeholders so the runtime can stage its own files before /etc is bound over them.
 mkdir -p etc
 for f in passwd group hosts localtime resolv.conf; do : > "etc/$f"; done

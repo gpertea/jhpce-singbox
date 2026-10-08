@@ -223,6 +223,16 @@ if [ -n "$(get claude_bin)" ]; then
     [ "$v" -ge 1 ] && ok "--agent claude runs the mounted CLI" || bad "--agent claude"
 else echo "  skip  claude CLI not found on PATH"; fi
 
+echo "== live: symlinks"
+mkdir -p "$T/links"
+ln -sfn /dcs04/lieber "$T/links/mounted"
+ln -sfn /dcl01 "$T/links/unmounted_root"
+ln -sfn /dcs04/hansen "$T/links/unmounted_export"
+OUT=$("$SBX" --quiet -- bash -c 'for l in "$@"; do [ -e "$l" ] && printf "%s\tok\n" "${l##*/}" || printf "%s\tbroken\n" "${l##*/}"; done' x "$T"/links/* 2>&1)
+[ "$(get mounted)" = ok ] && ok "symlink into mounted storage resolves" || bad "mounted link :: $OUT"
+[ "$(get unmounted_root)" = broken ] && [ "$(get unmounted_export)" = broken ] \
+    && ok "symlinks into unmounted storage are broken, not empty folders" || bad "unmounted links :: $OUT"
+
 echo "== live: --home-mode real-ro"
 OUT=$("$SBX" --quiet --home-mode real-ro -- bash -c '
 r() { printf "%s\t%s\n" "$1" "$2"; }

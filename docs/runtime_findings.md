@@ -122,3 +122,12 @@ one home, which is one more reason never to bind the real home.
 - `readlink -f` / `stat` on an unmounted autofs entry (`/dcs07/lieber` on a fresh compute node)
   does not trigger the automount; the wrapper's check then sees the autofs map. Listing
   `"$path/."` triggers it. Verified on compute-092 with `/dcs07/lieber` initially unmounted.
+
+## Symlinks (2026-10-07)
+
+- Links under `/dcs04/lieber/marmaypag` are relative or point into `/dcs04/lieber`; all resolve
+  inside. Absolute links to `/dcs05/lieber` and `/dcs07/lieber` resolve.
+- With the first skeleton (host top level mirrored), a link to unmounted `/dcl01` resolved to an
+  empty directory. The skeleton now omits storage roots; such links are broken, as they should be.
+- Codex's bwrap sandbox fails inside SCE 3.11.4: `bwrap: Can't bind mount /oldroot/ on /newroot/:
+  Unable to mount source on destination: Invalid argument`.

@@ -12,6 +12,7 @@ container takes that power away from the agent. That is the whole purpose.
 
 Authoritative documents, in order:
 
+0. `README.md` — user guide; keep it in step with the wrapper's behaviour.
 1. `docs/design.md` — current design. Supersedes the first drafts.
 2. `docs/implementation_plan.md` — phased plan with test expectations.
 3. `docs/runtime_findings.md` — measured behaviour of the JHPCE runtimes; cite it rather than
