@@ -2,3 +2,4 @@ share/rootfs/
 tests/.sbx_*
 __pycache__/
 share/empty/
+.nfs*
