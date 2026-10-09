@@ -1,4 +1,4 @@
-# libd-ai-sandbox: Design (revision 6, 2026-10-07)
+# libd-ai-sandbox: Design (revision 7, 2026-10-09)
 
 Supersedes `docs/initial/project_details.md`. Measured facts behind the choices here are in
 `docs/runtime_findings.md`.
@@ -90,8 +90,7 @@ Inside the container the agent sees:
 |---|---|---|
 | `/usr`, `/etc`, `/opt`, `/var/lib/sss`, `/var/lib/alternatives` | host | **ro** |
 | `/jhpce/shared` | host | **ro** |
-| `/dcs04/lieber`, `/dcs05/lieber`, `/dcs07/lieber` (site `etc/mounts.tsv`) | host NFS exports | **ro** |
-| entries of `~/.config/libd-ai-sandbox/mounts.tsv` | host | **ro** |
+| `read =` folders of the active profiles; site `default` profile: `/dcs04/lieber`, `/dcs05/lieber`, `/dcs07/lieber` | host NFS exports | **ro** |
 | any `--read PATH` | host | **ro**, at the path as typed |
 | `$MYSCRATCH` | host | **rw** by default (`--no-scratch` to drop) |
 | any `--write PATH` | host | **rw**, at the path as typed |
@@ -115,7 +114,10 @@ caches do not fill the home quota.
      (e.g. `~/ceph_backup` FUSE in `--home-mode real-ro`); a nested autofs map is refused;
    - writable sources with anything mounted below them are refused (except the real home in
      `real-rw`, where nested mounts keep their host flags, as on the host).
-3. Mounts files may only contain `ro` entries: format `src dest mode required`.
+3. The site system mounts file (`etc/mounts.tsv`: `/usr /etc /opt /var/lib/sss
+   /var/lib/alternatives /jhpce/shared`) may only contain `ro` entries (`src dest mode
+   required`). Data folders are not in it: they are `read =` lines in profiles (§9), so that a
+   shared module carries no lab-specific storage in its system configuration.
 4. A read-only mount nested inside a writable one is allowed only when it lands at the matching
    path inside it; otherwise the writable bind would expose the same data elsewhere.
 5. Binds are ordered by destination depth so parents are mounted before children; duplicate
@@ -211,10 +213,15 @@ directories at their usual path inside the synthetic home.
 
 | Layer | Who | Location | Content |
 |---|---|---|---|
-| Site | module maintainers | `$LIBD_AI_SANDBOX_ROOT/etc/` | `mounts.tsv`, `deny-commands.txt`, `profiles/*.conf` |
-| User | each user | `~/.config/libd-ai-sandbox/` (`LIBD_AI_SANDBOX_CONFIG_DIR`) | `mounts.tsv`, `skel/`, `config`, `profiles/*.conf` |
-| Environment | user, per shell | `LIBD_AI_SANDBOX_*` | home location and mode, runtime, extra mounts file, rootfs |
-| Command line | user, per run | options | `--profile`, `--write`, `--read`, `--module`, `--home-mode`, ... |
+| Site | module maintainers | `$LIBD_AI_SANDBOX_ROOT/etc/` | `mounts.tsv` (system only), `deny-commands.txt`, `profiles/*.conf` incl. `default.conf` (data folders) |
+| User | each user | `~/.config/libd-ai-sandbox/` (`LIBD_AI_SANDBOX_CONFIG_DIR`) | `profiles/*.conf` (a user `default.conf` replaces the site one), `config`, `skel/` |
+| Environment | user, per shell | `LIBD_AI_SANDBOX_*` | home location and mode, runtime, rootfs |
+| Command line | user, per run | options | `--profile`, `--write`, `--read`, `--home-dir`, `--module`, `--home-mode`, ... |
+
+**User entry points**, documented first in the README: data folders (`read =`), writable
+folders (`write =` / `--write`), and the session home (`home =`, whose `.bashrc` is the session
+startup file). All three live in profiles. Without `--profile`, the profile `default` is applied
+(user's copy if present, else the site's), so the standard storage is visible with no setup.
 
 Single values resolve in the order built-in, `config`, environment, profiles (in the order
 given), command line; the last one wins. Lists (`module`, `read`, `write`) accumulate.
@@ -235,6 +242,13 @@ Both are `key = value` files, parsed and never sourced; unknown keys abort the l
 | `read` | yes | yes | read-only path (repeatable) |
 | `write` | **no** | yes | writable path (repeatable) |
 | `description` | no | yes | shown by `--list-profiles` |
+| `include` | no | yes | apply another profile first (repeatable; each profile once; depth ≤ 8) |
+| `home` | yes | yes | session home folder; precedence `config` < `LIBD_AI_SANDBOX_HOME` < profile < `--home-dir` |
+
+A missing `read` folder from a profile or `config` is skipped with a warning (storage may be
+absent on some nodes); a missing `write` folder stops the launch. Per-profile homes separate
+`.bashrc`, agent logins and installed packages; homes under the real home or `$MYSCRATCH` are
+created on first use, others must exist.
 
 Values may use `~`, `$HOME`, `$USER`, `$MYSCRATCH`; nothing else is expanded. `write` is refused
 in `config` so that nothing becomes writable without an explicit per-run choice (`--write` or
@@ -247,6 +261,7 @@ Example `~/.config/libd-ai-sandbox/profiles/spatial.conf`:
 
 ```text
 description = spatialDLPFC metadata survey
+include = default
 module = conda_R/4.5.x
 read = /dcs05/lieber/marmaypag/spatialDLPFC_LIBD4035
 write = /dcs04/lieber/lcolladotor/dbDev_LIBD001/agent_runs/spatial
@@ -325,7 +340,8 @@ the session's writable paths, Slurm/ssh disabled, use modules. Text outside the 
 --read PATH         ro at the path as typed (repeatable)
 --no-scratch        do not mount $MYSCRATCH rw
 --home-mode MODE    synthetic | real-ro | real-rw
---profile NAME      apply a profile (repeatable); --list-profiles
+--profile NAME      apply a profile (repeatable; default: 'default'); --list-profiles
+--home-dir DIR      session home for this run
 --module NAME       module to load at session start (repeatable)
 --no-personal-libs  do not expose real ~/R and ~/.local/lib read-only
 --cmd STRING        bash -lc STRING

@@ -9,7 +9,7 @@
 set -euo pipefail
 
 PROG=libd-ai-sandbox
-VERSION=0.4.0-dev
+VERSION=0.5.0-dev
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 ROOT=${LIBD_AI_SANDBOX_ROOT:-$(dirname "$(dirname "$SELF")")}
 RUNTIME=${LIBD_AI_SANDBOX_RUNTIME:-/jhpce/shared/jhpce/core/singularity/3.11.4/bin/singularity}
@@ -21,10 +21,9 @@ DENY_BIN=$ROOT/libexec/deny
 REAL_HOME=$(getent passwd "$(id -un)" | cut -d: -f6)
 REAL_HOME=${REAL_HOME:-$HOME}
 CONFIG_DIR=${LIBD_AI_SANDBOX_CONFIG_DIR:-$REAL_HOME/.config/libd-ai-sandbox}
-USER_MOUNTS=$CONFIG_DIR/mounts.tsv
 SKEL=$CONFIG_DIR/skel
 STATE=${LIBD_AI_SANDBOX_STATE:-$REAL_HOME/.libd-ai-sandbox}
-SBX_HOME=${LIBD_AI_SANDBOX_HOME:-$STATE/home}
+SBX_HOME=${LIBD_AI_SANDBOX_HOME:-$STATE/home}   # final value: after config/profiles
 SBX_LOGS=$STATE/logs
 USER_CONFIG=$CONFIG_DIR/config
 USER_PROFILES=$CONFIG_DIR/profiles
@@ -52,7 +51,9 @@ Options:
                     a system path, or contain other mounted filesystems
   --read PATH       add PATH read-only at the same path (repeatable)
   --no-scratch      do not mount \$MYSCRATCH writable
-  --profile NAME    apply a saved profile (repeatable; see below)
+  --profile NAME    apply a saved profile (repeatable; see below). Without
+                    --profile, the profile named 'default' is used
+  --home-dir DIR    synthetic home location for this run (see 'home' key)
   --list-profiles   list available profiles and exit
   --module NAME     module to load at session start (repeatable)
   --no-personal-libs
@@ -99,16 +100,24 @@ Agents:
   Agent CLIs are found on your PATH (or LIBD_AI_SANDBOX_CODEX/_CLAUDE) and
   mounted read-only.
 
+Where to customize (details: README.md, "Where to customize"):
+  data folders  'read =' / 'write =' lines in a profile; the default profile
+                lists the LIBD storage (/dcs04/lieber, /dcs05/lieber, ...)
+  session home  'home =' in a profile or config (default $STATE/home);
+                its ~/.bashrc is the session startup file
+  system mounts $MOUNTS (maintainers only)
+
 Per-user customization ($CONFIG_DIR):
-  mounts.tsv   extra read-only mounts, same format as the site mounts file
   skel/        files copied into the synthetic home when missing there
                (e.g. skel/.bashrc as your durable template)
-  config       defaults, 'key = value' lines: home_mode, scratch, personal_libs,
-               agent, module, read, codex_seed, claude_seed, seed_credentials
-               (not write: writable paths need a profile or the command line)
+  config       defaults, 'key = value' lines: home, home_mode, scratch,
+               personal_libs, agent, module, read, codex_seed, claude_seed,
+               seed_credentials (not write: writable paths need a profile or
+               the command line)
   profiles/NAME.conf
-               same keys plus 'write' and 'description'; used with --profile NAME.
-               Site profiles: $SITE_PROFILES/NAME.conf
+               same keys plus 'write', 'include' and 'description'; used with
+               --profile NAME. A user profile replaces a site profile of the
+               same name. Site profiles: $SITE_PROFILES/NAME.conf
   Values may use ~, \$HOME, \$USER, \$MYSCRATCH. Lists (module, read, write)
   accumulate; for single values the last one wins, in the order: config,
   environment, profiles, command line.
@@ -118,8 +127,7 @@ Environment:
   LIBD_AI_SANDBOX_HOME_MODE     default --home-mode [synthetic]
   LIBD_AI_SANDBOX_CONFIG_DIR    per-user config dir [$CONFIG_DIR]
   LIBD_AI_SANDBOX_RUNTIME       runtime binary [$RUNTIME]
-  LIBD_AI_SANDBOX_MOUNTS        site read-only mounts file [$MOUNTS]
-  LIBD_AI_SANDBOX_MOUNTS_EXTRA  one more mounts file (same format)
+  LIBD_AI_SANDBOX_MOUNTS        site system mounts file [$MOUNTS]
   LIBD_AI_SANDBOX_ROOTFS        skeleton root directory [$ROOTFS]
   LIBD_AI_SANDBOX_STATE         per-user state: home, logs, agent folders [$STATE]
   LIBD_AI_SANDBOX_DENY          list of host commands masked inside [$DENY_LIST]
@@ -136,7 +144,7 @@ warn() { [ "$QUIET" = 1 ] || echo "$PROG: warning: $*" >&2; }
 # ---------------------------------------------------------------- options --
 WRITE_REQ=(); READ_REQ=(); MODULES=(); CLI_MODULES=(); PROFILES=(); CMD_STR=""; ARGV=()
 CLI_HOME_MODE=""; CLI_SCRATCH=""; CLI_PERSONAL=""; CLI_AGENT=""
-CLI_CODEX_SEED=""; CLI_CLAUDE_SEED=""; CLI_SEED_CRED=""; RESEED=0; YOLO=0
+CLI_CODEX_SEED=""; CLI_CLAUDE_SEED=""; CLI_SEED_CRED=""; RESEED=0; YOLO=0; CLI_HOME_DIR=""
 DRY_RUN=0; PRINT_BINDS=0; QUIET=0; RESET_HOME=0; LIST_PROFILES=0
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -148,6 +156,8 @@ while [ $# -gt 0 ]; do
         --profile)      [ $# -ge 2 ] || die "--profile needs a name"; PROFILES+=("$2"); shift 2 ;;
         --profile=*)    PROFILES+=("${1#*=}"); shift ;;
         --list-profiles) LIST_PROFILES=1; shift ;;
+        --home-dir)     [ $# -ge 2 ] || die "--home-dir needs a folder"; CLI_HOME_DIR=$2; shift 2 ;;
+        --home-dir=*)   CLI_HOME_DIR=${1#*=}; shift ;;
         --module)       [ $# -ge 2 ] || die "--module needs a name"; CLI_MODULES+=("$2"); shift 2 ;;
         --module=*)     CLI_MODULES+=("${1#*=}"); shift ;;
         --no-personal-libs) CLI_PERSONAL=no; shift ;;
@@ -180,7 +190,9 @@ done
 # Files are parsed, never sourced. Only the listed keys are accepted.
 HOME_MODE=synthetic; SCRATCH_RW=1; PERSONAL_LIBS=1; AGENT=shell
 CODEX_SEED=""; CLAUDE_SEED=""; SEED_CRED=0
-PROFILE_FILES=()
+PROFILE_FILES=(); CONF_HOME=""; PROFILE_HOME=""
+CONF_READ=(); CONF_WRITE=()      # "path<TAB>origin" from config/profiles
+declare -A PROFILE_SEEN=()
 expand_value() {   # ~, $HOME, $USER, $MYSCRATCH; nothing else is interpreted
     local v=$1
     case "$v" in "~") v=$REAL_HOME ;; "~/"*) v=$REAL_HOME/${v#\~/} ;; esac
@@ -190,8 +202,9 @@ expand_value() {   # ~, $HOME, $USER, $MYSCRATCH; nothing else is interpreted
     printf '%s' "$v"
 }
 yesno() { case "$1" in yes|true|1) echo 1 ;; no|false|0) echo 0 ;; *) return 1 ;; esac; }
-apply_conf() {   # FILE KIND(config|profile)
-    local file=$1 kind=$2 line key val n=0 b
+apply_conf() {   # FILE KIND(config|profile) [DEPTH]
+    local file=$1 kind=$2 depth=${3:-0} line key val n=0 b origin
+    if [ "$kind" = profile ]; then origin="profile $(basename "$file" .conf)"; else origin="config"; fi
     while IFS= read -r line || [ -n "$line" ]; do
         n=$((n+1))
         line=${line%%#*}
@@ -208,10 +221,16 @@ apply_conf() {   # FILE KIND(config|profile)
             claude_seed)   CLAUDE_SEED=$val ;;
             seed_credentials) b=$(yesno "$val") || die "$file:$n: seed_credentials must be yes or no"; SEED_CRED=$b ;;
             module)        MODULES+=("$val") ;;
-            read)          [[ "$val" == /* ]] || die "$file:$n: read path must be absolute"; READ_REQ+=("$val") ;;
+            read)          [[ "$val" == /* ]] || die "$file:$n: read path must be absolute"
+                           CONF_READ+=("$val"$'\t'"$origin") ;;
             write)         [ "$kind" = profile ] ||
                                die "$file:$n: 'write' is only allowed in profiles (writable paths must be chosen per run)"
-                           [[ "$val" == /* ]] || die "$file:$n: write path must be absolute"; WRITE_REQ+=("$val") ;;
+                           [[ "$val" == /* ]] || die "$file:$n: write path must be absolute"
+                           CONF_WRITE+=("$val"$'\t'"$origin") ;;
+            home)          [[ "$val" == /* ]] || die "$file:$n: home must be an absolute path"
+                           if [ "$kind" = profile ]; then PROFILE_HOME=$val; else CONF_HOME=$val; fi ;;
+            include)       [ "$kind" = profile ] || die "$file:$n: 'include' is only allowed in profiles"
+                           apply_profile "$val" $((depth+1)) ;;
             description)   [ "$kind" = profile ] || die "$file:$n: unknown key '$key'" ;;
             *)             die "$file:$n: unknown key '$key'" ;;
         esac
@@ -224,6 +243,15 @@ find_profile() {   # user profile wins over a site profile of the same name
     elif [ -f "$SITE_PROFILES/$name.conf" ]; then echo "$SITE_PROFILES/$name.conf"
     else die "profile '$name' not found in $USER_PROFILES or $SITE_PROFILES"; fi
 }
+apply_profile() {   # NAME [DEPTH]; each profile is applied once, includes first-come
+    local name=$1 depth=${2:-0} f
+    [ "$depth" -le 8 ] || die "profile includes nested too deeply (at '$name')"
+    f=$(find_profile "$name")
+    [ -z "${PROFILE_SEEN[$f]:-}" ] || return 0
+    PROFILE_SEEN[$f]=1
+    PROFILE_FILES+=("$f")
+    apply_conf "$f" profile "$depth"
+}
 if [ "$LIST_PROFILES" = 1 ]; then
     for dir in "$USER_PROFILES" "$SITE_PROFILES"; do
         [ -d "$dir" ] || continue
@@ -235,13 +263,21 @@ if [ "$LIST_PROFILES" = 1 ]; then
     done
     exit 0
 fi
-CLI_READ=("${READ_REQ[@]}"); CLI_WRITE=("${WRITE_REQ[@]}"); READ_REQ=(); WRITE_REQ=()
 [ -f "$USER_CONFIG" ] && apply_conf "$USER_CONFIG" config
 [ -n "${LIBD_AI_SANDBOX_HOME_MODE:-}" ] && HOME_MODE=$LIBD_AI_SANDBOX_HOME_MODE
-for pr in "${PROFILES[@]}"; do
-    f=$(find_profile "$pr"); PROFILE_FILES+=("$f")
-    apply_conf "$f" profile
-done
+# Without --profile, the 'default' profile (user's, else the site's) is used: it is
+# where the standard read-only data folders are listed.
+PROFILE_AUTO=0
+if [ ${#PROFILES[@]} -eq 0 ] && { [ -f "$USER_PROFILES/default.conf" ] || [ -f "$SITE_PROFILES/default.conf" ]; }; then
+    PROFILES=(default); PROFILE_AUTO=1
+fi
+for pr in "${PROFILES[@]}"; do apply_profile "$pr"; done
+# Session home: built-in < config < environment < profile < --home-dir
+[ -n "$CONF_HOME" ] && SBX_HOME=$CONF_HOME
+[ -n "${LIBD_AI_SANDBOX_HOME:-}" ] && SBX_HOME=$LIBD_AI_SANDBOX_HOME
+[ -n "$PROFILE_HOME" ] && SBX_HOME=$PROFILE_HOME
+[ -n "$CLI_HOME_DIR" ] && SBX_HOME=$(expand_value "$CLI_HOME_DIR")
+[[ "$SBX_HOME" == /* ]] || SBX_HOME=$(realpath -m -- "$SBX_HOME")
 [ -n "$CLI_HOME_MODE" ] && HOME_MODE=$CLI_HOME_MODE
 [ -n "$CLI_SCRATCH" ] && SCRATCH_RW=$(yesno "$CLI_SCRATCH")
 [ -n "$CLI_PERSONAL" ] && PERSONAL_LIBS=$(yesno "$CLI_PERSONAL")
@@ -249,7 +285,7 @@ done
 [ -n "$CLI_CODEX_SEED" ] && CODEX_SEED=$CLI_CODEX_SEED
 [ -n "$CLI_CLAUDE_SEED" ] && CLAUDE_SEED=$CLI_CLAUDE_SEED
 [ -n "$CLI_SEED_CRED" ] && SEED_CRED=1
-READ_REQ+=("${CLI_READ[@]}"); WRITE_REQ+=("${CLI_WRITE[@]}"); MODULES+=("${CLI_MODULES[@]}")
+MODULES+=("${CLI_MODULES[@]}")
 for m in "${MODULES[@]}"; do
     [[ "$m" =~ ^[A-Za-z0-9_.+/-]+$ ]] || die "invalid module name '$m'"
 done
@@ -356,11 +392,6 @@ logical_path() { realpath -s -- "$1"; }
 
 # ------------------------------------------------------ mounts files --------
 MOUNT_FILES=("$MOUNTS")
-[ -f "$USER_MOUNTS" ] && MOUNT_FILES+=("$USER_MOUNTS")
-if [ -n "${LIBD_AI_SANDBOX_MOUNTS_EXTRA:-}" ]; then
-    [ -f "$LIBD_AI_SANDBOX_MOUNTS_EXTRA" ] || die "extra mounts file not found: $LIBD_AI_SANDBOX_MOUNTS_EXTRA"
-    MOUNT_FILES+=("$LIBD_AI_SANDBOX_MOUNTS_EXTRA")
-fi
 RO_PLAN=()   # "src<TAB>dest<TAB>note" collected first, validated after automounts
 parse_mounts_file() {
     local file=$1 line src dest mode req extra n=0
@@ -388,8 +419,18 @@ for f in "${MOUNT_FILES[@]}"; do parse_mounts_file "$f"; done
 home_conflict() {   # dest or src equal to / an ancestor of the real home
     is_under "$REAL_HOME" "$1"
 }
+READ_ALL=()   # "path<TAB>origin"
+for row in "${CONF_READ[@]}"; do
+    p=${row%%$'\t'*}
+    if [ ! -e "$p" ]; then warn "read-only folder from ${row#*$'\t'} not found, skipped: $p"; continue; fi
+    READ_ALL+=("$row")
+done
 for p in "${READ_REQ[@]}"; do
     [ -e "$p" ] || die "--read path does not exist: $p"
+    READ_ALL+=("$p"$'\t'"--read")
+done
+for row in "${READ_ALL[@]}"; do
+    p=${row%%$'\t'*}; origin=${row#*$'\t'}
     trigger_automount "$p"
     s=$(readlink -f "$p"); d=$(logical_path "$p")
     if home_conflict "$d" || home_conflict "$s"; then
@@ -398,13 +439,16 @@ for p in "${READ_REQ[@]}"; do
     if [ "$HOME_MODE" = real-ro ] && is_under "$d" "$REAL_HOME"; then
         warn "--read $p is redundant with --home-mode real-ro; skipping"; continue
     fi
-    RO_PLAN+=("$s"$'\t'"$d"$'\t'"--read")
+    RO_PLAN+=("$s"$'\t'"$d"$'\t'"$origin")
 done
 
 WRITE_PLAN=()   # "src<TAB>dest<TAB>note"
 [ "$SCRATCH_RW" = 1 ] && WRITE_PLAN+=("$MYSCRATCH"$'\t'"$MYSCRATCH"$'\t'"\$MYSCRATCH")
-for p in "${WRITE_REQ[@]}"; do
-    [ -d "$p" ] || die "--write path must be an existing directory: $p (create it first)"
+WRITE_ALL=("${CONF_WRITE[@]}")
+for p in "${WRITE_REQ[@]}"; do WRITE_ALL+=("$p"$'\t'"--write"); done
+for row in "${WRITE_ALL[@]}"; do
+    p=${row%%$'\t'*}; origin=${row#*$'\t'}
+    [ -d "$p" ] || die "writable folder must already exist: $p (from $origin; create it first)"
     trigger_automount "$p"
     s=$(readlink -f "$p"); d=$(logical_path "$p")
     if home_conflict "$d" || home_conflict "$s"; then
@@ -413,7 +457,7 @@ for p in "${WRITE_REQ[@]}"; do
     if [ "$HOME_MODE" = real-rw ] && is_under "$d" "$REAL_HOME"; then
         warn "--write $p is redundant with --home-mode real-rw; skipping"; continue
     fi
-    WRITE_PLAN+=("$s"$'\t'"$d"$'\t'"--write")
+    WRITE_PLAN+=("$s"$'\t'"$d"$'\t'"$origin")
 done
 
 # ------------------------------------------------------------- home mode ----
@@ -741,6 +785,8 @@ write_log() {
 if [ "$DRY_RUN" = 1 ]; then
     print_binds
     echo
+    pl=""; for f in "${PROFILE_FILES[@]}"; do pl+="$f "; done
+    echo "profiles: ${pl:-(none)}"
     echo "agent config: codex -> $CODEX_DIR_HOST, claude -> $CLAUDE_DIR_HOST"
     [ -n "$CODEX_SEED" ] && echo "would seed codex settings from $CODEX_SEED$([ "$SEED_CRED" = 1 ] && echo ' (with credentials)')"
     [ -n "$CLAUDE_SEED" ] && echo "would seed claude settings from $CLAUDE_SEED$([ "$SEED_CRED" = 1 ] && echo ' (with credentials)')"
@@ -840,6 +886,9 @@ write_log "$LOG"
 if [ "$QUIET" != 1 ]; then
     {
         echo "$PROG $VERSION: LIBD/JHPCE storage is read-only in this session."
+        pl=""; for f in "${PROFILE_FILES[@]}"; do pl+="$(basename "$f" .conf) "; done
+        echo "  profile:  ${pl:-(none)}$([ "$PROFILE_AUTO" = 1 ] && echo '(automatic: no --profile given)')"
+        [ "$HOME_MODE" = synthetic ] && echo "  home:     $SBX_HOME (edit its .bashrc to customize sessions)"
         printf '  writable: %s\n' "${WRITABLE[@]}" /tmp
         [ "$HOME_MODE" = real-rw ] &&
             echo "  WARNING: your real home is writable; the agent can change dotfiles that your host logins run."

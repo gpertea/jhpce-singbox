@@ -40,9 +40,11 @@ user did not designate?
 
 ## Operating principles
 
-1. **Read-only by default, kernel-enforced.** Host system dirs, `/jhpce/shared` and the LIBD
-   exports are bind-mounted `ro`; nested mounts under a ro source are rebound ro. Writable:
-   `$MYSCRATCH` (default), the synthetic home, scratch `/tmp`, and each `--write PATH`. Writable paths come only from the command line, never from a
+1. **Read-only by default, kernel-enforced.** Host system dirs and `/jhpce/shared` (site
+   `etc/mounts.tsv`) and the data folders (`read =` lines in profiles; the site `default`
+   profile lists the LIBD exports) are bind-mounted `ro`; nested mounts under a ro source are
+   rebound ro. Writable: `$MYSCRATCH` (default), the session home, scratch `/tmp`, the
+   `write =` folders of the chosen profiles and each `--write PATH`; never from `config` or a
    mounts file.
 2. **Bind real mount points, never autofs roots.** A read-only bind protects exactly one
    filesystem; mounts nested below it keep their own flags. Binding `/dcs04` ro left

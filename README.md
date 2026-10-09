@@ -15,6 +15,7 @@ tool.
 
 ## Contents
 
+- [Where to customize (read this first)](#where-to-customize-read-this-first)
 - [Quick start](#quick-start)
 - [What is read-only, what is writable](#what-is-read-only-what-is-writable)
 - [Writing into a folder inside read-only storage](#writing-into-a-folder-inside-read-only-storage)
@@ -26,6 +27,78 @@ tool.
 - [Troubleshooting](#troubleshooting)
 - [Planned: sandboxed Positron / VS Code sessions](#planned-sandboxed-positron--vs-code-sessions)
 - [Reference](#reference)
+
+## Where to customize (read this first)
+
+A session is a closed world: inside it, the agent (or you) sees only the folders that
+were *mounted*, that is, made visible, when the session started. Three settings decide
+what that world looks like, and each one is a line in a plain-text file that you edit
+**on the host, before starting a session** (with `nano`, for example):
+
+| What you want to change | Where | Default |
+|---|---|---|
+| **Which data folders are visible, read-only** | `read = /path` lines in a profile | the `default` profile: `/dcs04/lieber`, `/dcs05/lieber`, `/dcs07/lieber` |
+| **Which folders are writable** | `write = /path` lines in a profile, or `--write /path` on the command line | none (only `$MYSCRATCH`, the session home and `/tmp` are writable) |
+| **The session home**: `~/.bashrc` (modules, aliases), agent logins, installed packages | the folder named by `home = /path` in a profile; edit `.bashrc` in that folder | `~/.libd-ai-sandbox/home` (so: `~/.libd-ai-sandbox/home/.bashrc`) |
+
+**Profiles.** A profile is a small text file, `~/.config/libd-ai-sandbox/profiles/NAME.conf`,
+used with `libd-ai-sandbox --profile NAME`. When you give no `--profile`, the profile
+named `default` is used. The module ships one in its own folder,
+`$LIBD_AI_SANDBOX_ROOT/etc/profiles/default.conf` (read-only for users). It looks like this:
+
+```text
+description = LIBD storage, read-only
+
+# ---- read-only data folders ----
+read = /dcs04/lieber
+read = /dcs05/lieber
+read = /dcs07/lieber
+
+# ---- writable folders ----
+# none by default; add 'write = /existing/folder' lines in your own profiles
+
+# ---- session home ----
+# home = ~/.libd-ai-sandbox/home
+```
+
+To change what *every* session sees, copy it and edit your copy; your copy replaces the
+module's:
+
+```bash
+mkdir -p ~/.config/libd-ai-sandbox/profiles
+cp $LIBD_AI_SANDBOX_ROOT/etc/profiles/default.conf ~/.config/libd-ai-sandbox/profiles/
+nano ~/.config/libd-ai-sandbox/profiles/default.conf
+```
+
+To set up a **project**, make a new profile that starts from the default and adds its
+writable folder (and, if you like, its own home):
+
+```text
+# ~/.config/libd-ai-sandbox/profiles/myproject.conf
+description = my project
+include = default
+write = /dcs04/lieber/<lab>/<project>/agent_out
+# home = ~/.libd-ai-sandbox/homes/myproject
+```
+
+```bash
+mkdir -p /dcs04/lieber/<lab>/<project>/agent_out   # writable folders must exist first
+libd-ai-sandbox --profile myproject --dry-run      # check: 'ro' and 'rw' lines
+libd-ai-sandbox --profile myproject
+```
+
+**One home or several?** By default all sessions share one home. A profile with its own
+`home =` gets a separate `.bashrc`, separate agent logins, separate installed R/Python
+packages. That keeps projects apart, at the cost of logging in to the agents and setting
+up `.bashrc` once per home. A home under your real home or under `$MYSCRATCH` is created
+on first use; elsewhere, create it first.
+
+**Always check before starting:** `libd-ai-sandbox --profile NAME --dry-run` lists every
+mounted folder (`ro` = read-only, `rw` = writable), which profile line it came from, and
+the session home.
+
+Not for users: `$LIBD_AI_SANDBOX_ROOT/etc/mounts.tsv` lists the *system* folders every
+session needs (`/usr`, `/etc`, `/opt`, `/jhpce/shared`); module maintainers manage it.
 
 ## Quick start
 
@@ -52,13 +125,13 @@ exit
 
 | Inside the sandbox | Mode |
 |---|---|
-| `/dcs04/lieber`, `/dcs05/lieber`, `/dcs07/lieber` | read-only |
+| the `read =` folders of your profile; by default `/dcs04/lieber`, `/dcs05/lieber`, `/dcs07/lieber` | read-only |
 | `/jhpce/shared` (modules, shared software) | read-only |
 | `/usr`, `/etc`, `/opt` (the node's own system) | read-only |
 | `$MYSCRATCH` (`/fastscratch/myscratch/$USER`) | **writable** (`--no-scratch` to turn off) |
 | `$HOME` | **writable**, but it is a separate sandbox home, not your real home ([details](#your-sandbox-home-and-session-setup)) |
 | `/tmp` | **writable**, backed by `$MYSCRATCH/ai-sandbox/work/tmp` |
-| each `--write PATH` | **writable** |
+| the `write =` folders of your profile, and each `--write PATH` | **writable** |
 | each `--read PATH` | read-only |
 
 Everything keeps its host path, so `/dcs04/lieber/marmaypag/...` is the same path
@@ -111,8 +184,8 @@ Goal: let an agent walk every project under `/dcs04/lieber/marmaypag`, open the 
 objects (`.rds`, `.RData`, HDF5-backed SummarizedExperiments) and write a table and a
 summary into `/dcs04/lieber/marmaypag/data-inventory`, with no way to change the data.
 
-`/dcs04/lieber` is already read-only by default, so the lab folder needs nothing extra;
-only the output folder is opened for writing.
+The profile includes the `default` profile, so `/dcs04/lieber` (and with it the lab
+folder) is visible read-only; only the output folder is opened for writing.
 
 **1. Create the output folder and a profile** (once, on the host):
 
@@ -126,8 +199,10 @@ The profile ([examples/profiles/marmaypag-inventory.conf](examples/profiles/marm
 
 ```text
 description = R-object inventory of /dcs04/lieber/marmaypag
-module = conda_R/4.5.x
+include = default
 write = /dcs04/lieber/marmaypag/data-inventory
+# home = ~/.libd-ai-sandbox/homes/marmaypag-inventory
+module = conda_R/4.5.x
 ```
 
 **2. Get a node with enough memory.** R loads a whole `.rds` into memory to inspect it,
@@ -207,15 +282,17 @@ updates happen outside the sandbox.
 
 ## Your sandbox home and session setup
 
-Inside, `$HOME` has your normal path (`/users/$USER`) but is a separate folder,
-`~/.libd-ai-sandbox/home` on the host. It persists between sessions. Your real home
-is not visible, so the agent cannot change your dotfiles, ssh keys or R setup.
+Inside, `$HOME` has your normal path (`/users/$USER`) but is a separate folder on the
+host: `~/.libd-ai-sandbox/home`, or the folder a profile names with `home =` (or
+`--home-dir DIR` for one run). It persists between sessions. Your real home is not
+visible, so the agent cannot change your dotfiles, ssh keys or R setup. The startup
+banner prints which home a session uses.
 
 **Session setup.** Each session runs the JHPCE login profile (default modules), then
 the sandbox's `~/.bashrc`. Put `module load` lines, aliases and variables there:
 
 ```bash
-nano ~/.libd-ai-sandbox/home/.bashrc      # from the host
+nano ~/.libd-ai-sandbox/home/.bashrc      # from the host (or <home>/.bashrc of your profile)
 nano ~/.bashrc                            # or from inside; then: source ~/.bashrc
 ```
 
@@ -235,29 +312,35 @@ modes `~/.ssh` appears empty inside, so your login keys stay out of reach.
 
 ## Profiles and defaults
 
-A profile is a saved set of options for a kind of work, used with `--profile NAME`.
-Files: `~/.config/libd-ai-sandbox/profiles/NAME.conf` (yours) or the module's
-`etc/profiles/NAME.conf` (shared). `libd-ai-sandbox --list-profiles` lists them.
+Profiles are introduced in [Where to customize](#where-to-customize-read-this-first).
+In short: `~/.config/libd-ai-sandbox/profiles/NAME.conf` (yours) or the module's
+`etc/profiles/NAME.conf` (shared); yours wins when both exist. `default` is used when no
+`--profile` is given. `libd-ai-sandbox --list-profiles` lists them.
+
+A fuller example:
 
 ```text
 description = spatial DLPFC metadata survey
-module = conda_R/4.5.x
+include = default
 read = /dcs05/lieber/<lab>/<other-project>
 write = /dcs04/lieber/<lab>/agent_outputs/spatial
-home_mode = synthetic
+home = ~/.libd-ai-sandbox/homes/spatial
+module = conda_R/4.5.x
+agent = codex
 codex_seed = ~/.codex
 ```
 
-Keys: `description`, `module`, `read`, `write`, `home_mode`, `scratch`,
-`personal_libs`, `agent`, `codex_seed`, `claude_seed`, `seed_credentials`. `module`,
-`read` and `write` can repeat. Values may use `~`, `$HOME`, `$USER`, `$MYSCRATCH`.
+- `include = NAME` applies another profile first (each profile at most once). Without
+  `include = default`, a profile shows only the folders it lists itself.
+- `read`, `write`, `module` and `include` can repeat; the rest are single values.
+- Several `--profile` options are applied in order.
+- A `read` folder that does not exist on a node is skipped with a warning; a `write`
+  folder that does not exist stops the launch (create it first).
 
-`~/.config/libd-ai-sandbox/config` holds your defaults with the same keys, except
-`write`: writable folders always come from a profile or the command line for that run.
-Command-line options win over profiles, which win over the defaults.
-
-Extra read-only storage for every session can be listed in
-`~/.config/libd-ai-sandbox/mounts.tsv` (same format as the module's `etc/mounts.tsv`).
+`~/.config/libd-ai-sandbox/config` holds your personal defaults with the same keys,
+except `write` and `include`: writable folders always come from a profile or the command
+line, chosen for that run. Precedence for single values: `config` < environment <
+profiles < command line.
 
 ## Option reference
 
@@ -270,7 +353,8 @@ Extra read-only storage for every session can be listed in
 | `--write PATH` | make an existing folder writable at its own path (repeatable). Refused: missing folders, whole filesystems or storage roots, system paths, `/jhpce/shared`, your real home or its parents, folders with other filesystems mounted inside |
 | `--read PATH` | make a folder visible read-only at its own path (repeatable) |
 | `--no-scratch` | do not make `$MYSCRATCH` writable (sandbox home, `/tmp` and cache stay writable) |
-| `--profile NAME` | apply `profiles/NAME.conf` (repeatable, applied in order) |
+| `--profile NAME` | apply `profiles/NAME.conf` (repeatable, applied in order); without it, `default` |
+| `--home-dir DIR` | session home for this run (overrides `home =`) |
 | `--list-profiles` | list user and site profiles with their descriptions |
 | `--module NAME` | load a module at session start, after the JHPCE defaults (repeatable) |
 | `--no-personal-libs` / `--personal-libs` | hide / show your real `~/R` and `~/.local/lib` read-only (synthetic home only; default shown) |
@@ -294,21 +378,24 @@ Extra read-only storage for every session can be listed in
 
 | Location | Purpose |
 |---|---|
+| `~/.config/libd-ai-sandbox/profiles/NAME.conf` | your profiles: data folders, writable folders, home |
+| `~/.config/libd-ai-sandbox/profiles/default.conf` | your default profile (replaces the module's) |
 | `~/.config/libd-ai-sandbox/config` | your defaults (`key = value`) |
-| `~/.config/libd-ai-sandbox/profiles/NAME.conf` | your profiles |
-| `~/.config/libd-ai-sandbox/mounts.tsv` | extra read-only mounts for every session (`src dest ro yes\|no`) |
 | `~/.config/libd-ai-sandbox/skel/` | template files copied into the sandbox home when missing |
-| `~/.libd-ai-sandbox/home/` | the sandbox home (`$HOME` inside) |
+| `~/.libd-ai-sandbox/home/` | the default session home (`$HOME` inside) |
 | `~/.libd-ai-sandbox/logs/` | one JSON record per launch |
 | `~/.libd-ai-sandbox/agents/` | agent config folders when a real home is used |
 | `$MYSCRATCH/ai-sandbox/work/`, `.../cache/` | `/tmp` and caches |
-| `<module>/etc/mounts.tsv`, `etc/deny-commands.txt`, `etc/profiles/` | site settings |
+| `<module>/etc/profiles/` | site profiles, including `default.conf` |
+| `<module>/etc/mounts.tsv`, `etc/deny-commands.txt` | system mounts and masked commands (maintainers) |
 
 ### Keys in `config` and profiles
 
 | Key | Values | In `config` | In profiles |
 |---|---|---|---|
 | `description` | text | no | yes |
+| `include` | profile name (repeatable) | no | yes |
+| `home` | absolute path of the session home | yes | yes |
 | `module` | module name (repeatable) | yes | yes |
 | `read` | absolute path (repeatable) | yes | yes |
 | `write` | absolute path (repeatable) | **no** | yes |
@@ -326,12 +413,11 @@ Values may use `~`, `$HOME`, `$USER`, `$MYSCRATCH`. Precedence for single values
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LIBD_AI_SANDBOX_HOME` | `~/.libd-ai-sandbox/home` | sandbox home location |
+| `LIBD_AI_SANDBOX_HOME` | `~/.libd-ai-sandbox/home` | session home (a profile's `home =` and `--home-dir` win) |
 | `LIBD_AI_SANDBOX_HOME_MODE` | `synthetic` | default `--home-mode` |
 | `LIBD_AI_SANDBOX_STATE` | `~/.libd-ai-sandbox` | home, logs, agent folders |
 | `LIBD_AI_SANDBOX_CONFIG_DIR` | `~/.config/libd-ai-sandbox` | your configuration folder |
-| `LIBD_AI_SANDBOX_MOUNTS` | `<module>/etc/mounts.tsv` | site read-only mounts |
-| `LIBD_AI_SANDBOX_MOUNTS_EXTRA` | none | one more mounts file |
+| `LIBD_AI_SANDBOX_MOUNTS` | `<module>/etc/mounts.tsv` | system mounts file (maintainers) |
 | `LIBD_AI_SANDBOX_DENY` | `<module>/etc/deny-commands.txt` | host commands masked inside |
 | `LIBD_AI_SANDBOX_CODEX`, `LIBD_AI_SANDBOX_CLAUDE` | `codex`/`claude` on `PATH` | agent programs to mount |
 | `LIBD_AI_SANDBOX_RUNTIME` | SingularityCE 3.11.4 | container runtime binary |
@@ -351,7 +437,8 @@ colon-separated), `LIBD_AI_SANDBOX_HOME_MODE`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`
 | `--write path must be an existing directory` | `mkdir -p` it on the host, then retry |
 | `refusing --write ...: it is a whole read-only mount` | pick a folder inside it |
 | `... is an autofs map` | name the lab folder (`/dcs04/lieber`), not the storage root (`/dcs04`) |
-| a path or symlink target is missing inside | it is outside the mounted storage; add `--read PATH` (or a line in `~/.config/libd-ai-sandbox/mounts.tsv`) |
+| a path or symlink target is missing inside | it is not in any `read =` line; add one to your profile, or `--read PATH` for one run |
+| `read-only folder from profile ... not found, skipped` | that storage is not mounted on this node, or the path has a typo |
 | `sbatch is disabled inside the sandbox` | by design; run jobs from outside |
 | `module: command not found` in a script | run it with `bash -l`, or via `--cmd` |
 | R or the agent killed for memory | ask `srun` for more `--mem` |

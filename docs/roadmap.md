@@ -70,6 +70,9 @@ Wrapper changes:
   (today the modulefile is `0.1` and the wrapper `0.4.0-dev`). Keep `CHANGELOG.md`.
 - The skeleton root (`share/rootfs`) and the wrapper's `ROOT` are on `/jhpce/shared`, already
   visible on every node; nothing else needs deploying per node.
+- Lab-specific storage lives only in `etc/profiles/default.conf` (`read = /dcs04/lieber`, ...);
+  `etc/mounts.tsv` holds system mounts only. A deployment for another group changes the default
+  profile, nothing else. Users override it with their own `profiles/default.conf`.
 
 ## 3. Production modulefile (`jhpce_module_config`)
 

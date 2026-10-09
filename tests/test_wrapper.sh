@@ -10,7 +10,7 @@ REPO=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
 SBX=$REPO/bin/libd-ai-sandbox
 TAG=sbx_probe_$$
 T=$MYSCRATCH/.sbx_test_$$
-mkdir -p "$T/config/skel" "$T/ro_in_scratch"
+mkdir -p "$T/config/skel" "$T/config/profiles" "$T/ro_in_scratch"
 export LIBD_AI_SANDBOX_HOME=$T/home
 export LIBD_AI_SANDBOX_CONFIG_DIR=$T/config
 export LIBD_AI_SANDBOX_STATE=$T/state
@@ -42,7 +42,7 @@ WT=$REPO/tests/.sbx_write_target
 mkdir -p "$WT"
 expect_refusal "autofs map root as --read"        "autofs map"            -- --read /dcs04
 expect_refusal "whole export as --write"          "whole read-only mount" -- --write /dcs04/lieber
-expect_refusal "missing --write dir"              "must be an existing"   -- --write "$REPO/tests/.sbx_does_not_exist"
+expect_refusal "missing --write dir"              "must already exist"   -- --write "$REPO/tests/.sbx_does_not_exist"
 expect_refusal "--write /"                        "real home"             -- --write /
 expect_refusal "--write system path"              "system/shared path"    -- --write /usr/local
 expect_refusal "--write under /jhpce/shared"      "system/shared path"    -- --write /jhpce/shared/libd
@@ -53,12 +53,13 @@ expect_refusal "--write whole scratch filesystem" "entire filesystem"     -- --w
 expect_refusal "bad --home-mode"                  "--home-mode must be"   -- --home-mode bogus
 LIBD_AI_SANDBOX_HOME=/dcs04/lieber expect_refusal "synthetic home = whole ro export" "whole read-only mount" --
 LIBD_AI_SANDBOX_HOME=$REAL_HOME expect_refusal "synthetic home = real home" "real home" --
-printf '/dcs04/lieber/lcolladotor /dcs04/lieber/lcolladotor rw no\n' > "$T/bad.tsv"
-LIBD_AI_SANDBOX_MOUNTS_EXTRA=$T/bad.tsv expect_refusal "rw entry in mounts file" "mode must be 'ro'" --
-printf '/dcs05 /dcs05 ro no\n' > "$T/bad.tsv"
-LIBD_AI_SANDBOX_MOUNTS_EXTRA=$T/bad.tsv expect_refusal "autofs root in mounts file" "autofs map" --
+{ cat "$REPO/etc/mounts.tsv"; printf '/dcs04/lieber/lcolladotor /dcs04/lieber/lcolladotor rw no\n'; } > "$T/bad.tsv"
+LIBD_AI_SANDBOX_MOUNTS=$T/bad.tsv expect_refusal "rw entry in site mounts file" "mode must be 'ro'" --
+printf 'read = /dcs05\n' > "$T/config/profiles/autofsroot.conf"
+expect_refusal "autofs root as profile read"      "autofs map"            -- --profile autofsroot
+printf 'write = %s\n' "$T/no_such_dir" > "$T/config/profiles/missingwrite.conf"
+expect_refusal "profile write to a missing folder" "must already exist"   -- --profile missingwrite
 
-mkdir -p "$T/config/profiles"
 printf 'write = /tmp\n' > "$T/config/config"
 expect_refusal "write in config file"            "only allowed in profiles" --
 unlink "$T/config/config"
@@ -71,6 +72,19 @@ expect_refusal "--cmd with --agent codex"        "--cmd runs a shell"    -- --ag
 expect_refusal "missing seed folder"             "seed folder not found" -- --codex-seed "$T/no_such_seed"
 expect_refusal "--seed-credentials alone"        "needs --codex-seed"    -- --seed-credentials
 out=$("$SBX" --dry-run --write "$WT" 2>&1) && [[ "$out" == *"rw   $WT"* ]] && ok "dry-run lists --write target" || bad "dry-run :: $out"
+out=$("$SBX" --print-binds 2>&1)
+[[ "$out" == *"/dcs04/lieber   [profile default]"* ]] && ok "default profile applied when no --profile is given" || bad "default profile :: $out"
+printf 'description = no data\n' > "$T/config/profiles/nodata.conf"
+out=$("$SBX" --print-binds --profile nodata 2>&1)
+[[ "$out" != *"/dcs04/lieber "* ]] && ok "a profile without include = default has no data folders" || bad "nodata :: $out"
+printf 'include = default\ninclude = loopy\nread = %s/no_such_dir\nhome = %s/home_from_profile\n' "$T" "$T" > "$T/config/profiles/loopy.conf"
+out=$("$SBX" --print-binds --profile loopy 2>&1)
+[[ "$out" == *"/dcs04/lieber   [profile default]"* ]] && ok "include = default inherits data folders; self-include is harmless" || bad "include :: $out"
+[[ "$out" == *"not found, skipped: $T/no_such_dir"* ]] && ok "missing profile read folder is skipped with a warning" || bad "missing read :: $out"
+[[ "$out" == *"$T/home_from_profile "*"[synthetic home]"* ]] && ok "profile 'home' sets the session home" || bad "profile home :: $out"
+out=$("$SBX" --print-binds --profile loopy --home-dir "$T/home_cli" 2>&1)
+[[ "$out" == *"$T/home_cli "*"[synthetic home]"* ]] && ok "--home-dir overrides the profile home" || bad "--home-dir :: $out"
+[ ! -e "$T/home_from_profile" ] && [ ! -e "$T/home_cli" ] && ok "print-binds created no home" || bad "home created by print-binds"
 [ ! -e "$T/home" ] && [ ! -e "$T/state" ] && ok "dry-run creates nothing" || bad "dry-run created files"
 out=$("$SBX" --dry-run --home-mode real-rw 2>&1) && [[ "$out" == *"[REAL home, writable]"* ]] && ok "real-rw shown in bind table" || bad "real-rw dry-run :: $out"
 if grep -q " $REAL_HOME/" /proc/mounts; then
@@ -80,7 +94,7 @@ fi
 
 echo "== live: synthetic home"
 printf 'from skel\n' > "$T/config/skel/.sbx_skel_marker"
-printf '%s %s ro yes\n' "$T/ro_in_scratch" "$T/ro_in_scratch" > "$T/config/mounts.tsv"
+printf 'read = %s\n' "$T/ro_in_scratch" > "$T/config/config"   # read-only folder inside writable $MYSCRATCH
 RO_TARGETS=()
 for root in /dcs04/lieber /dcs05/lieber /dcs07/lieber /jhpce/shared/libd; do
     [ -e "$root" ] || continue
@@ -153,6 +167,7 @@ echo "== live: profile + personal libraries"
 mkdir -p "$T/prof_out"
 cat > "$T/config/profiles/t.conf" <<PROF
 description = test profile
+include = default
 module = conda_R/4.5.x
 write = $T/prof_out
 PROF
