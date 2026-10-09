@@ -1,9 +1,9 @@
 # AGENTS.md
 
-## Project: LIBD/JHPCE AI Agent Data-Protection Sandbox (`libd-ai-sandbox`)
+## Project: ai-singbox, a customizable Singularity container sandbox for AI agents (JHPCE)
 
 A Singularity/Apptainer-based wrapper for running AI agents (Codex, Claude Code, plain shell)
-on JHPCE so that the agent **cannot create, modify, or delete anything on LIBD/JHPCE storage**
+on JHPCE so that the agent **cannot create, modify, or delete anything on cluster storage**
 except inside locations the user explicitly designated for that run. The agent keeps the
 invoking user's full *read* access at the same absolute paths.
 
@@ -42,7 +42,7 @@ user did not designate?
 
 1. **Read-only by default, kernel-enforced.** Host system dirs and `/jhpce/shared` (site
    `etc/mounts.tsv`) and the data folders (`read =` lines in profiles; the site `default`
-   profile lists the LIBD exports) are bind-mounted `ro`; nested mounts under a ro source are
+   profile includes the site `libd` profile, which lists the LIBD exports) are bind-mounted `ro`; nested mounts under a ro source are
    rebound ro. Writable: `$MYSCRATCH` (default), the session home, scratch `/tmp`, the
    `write =` folders of the chosen profiles and each `--write PATH`; never from `config` or a
    mounts file.
@@ -51,7 +51,7 @@ user did not designate?
    `/dcs04/lieber` writable (measured). The wrapper triggers automounts, checks `/proc/mounts`,
    and aborts on violation.
 3. **Synthetic home by default.** `$HOME` keeps its real path inside, backed by
-   `~/.libd-ai-sandbox/home` (durable). `--home-mode real-ro|real-rw` exposes the real home
+   `~/.ai-singbox/home` (durable). `--home-mode real-ro|real-rw` exposes the real home
    instead, rw only by explicit choice. Always pass `--home` or `--no-home`; under `--contain`
    with neither, the runtime mounts the real home read-write (measured).
 4. **Write targets must already exist and are checked.** `--write` refuses `/`, system and
@@ -88,10 +88,10 @@ user did not designate?
 
 ```bash
 module use /dcs04/lieber/lcolladotor/dbDev_LIBD001/jhpce-singbox/modulefiles   # development
-module load libd_ai_sandbox/0.1
-libd-ai-sandbox --dry-run --write /dcs04/lieber/<lab>/<project>/agent_out
-libd-ai-sandbox --write /dcs04/lieber/<lab>/<project>/agent_out
+module load ai-singbox/0.1
+ai-singbox --dry-run --write /dcs04/lieber/<lab>/<project>/agent_out
+ai-singbox --write /dcs04/lieber/<lab>/<project>/agent_out
 ```
 
 Inside, paths are identical to the host; only `$MYSCRATCH`, the synthetic home, `/tmp` and the
-`--write` directories are writable (listed in `$LIBD_AI_SANDBOX_RW`).
+`--write` directories are writable (listed in `$AI_SINGBOX_RW`).

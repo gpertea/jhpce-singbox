@@ -1,4 +1,4 @@
-# libd-ai-sandbox: Design (revision 7, 2026-10-09)
+# ai-singbox: Design (revision 7, 2026-10-09)
 
 Supersedes `docs/initial/project_details.md`. Measured facts behind the choices here are in
 `docs/runtime_findings.md`.
@@ -6,7 +6,7 @@ Supersedes `docs/initial/project_details.md`. Measured facts behind the choices 
 ## 1. The one goal
 
 > An AI agent (Codex, Claude Code, or a plain shell) running on JHPCE must be unable to create,
-> modify, or delete anything on LIBD/JHPCE storage except inside locations the user explicitly
+> modify, or delete anything on cluster storage except inside locations the user explicitly
 > chose for that run.
 
 The invoking user typically has write permission across many project directories. The container
@@ -32,7 +32,7 @@ the fourth.
 | Channel | Example | Control |
 |---|---|---|
 | Direct filesystem writes | `rm -rf`, `sed -i`, tools writing caches or indexes next to inputs, scripts assuming inputs are writable | Kernel-enforced read-only bind mounts; only designated paths writable |
-| Writes to the real home | dotfile edits, `pip install --user`, R library installs, `.Rhistory` | Real home never mounted; synthetic scratch-backed home at the same path |
+| Writes to the real home | dotfile edits, `pip install --user`, R library installs, `.Rhistory` | Real home never mounted (default mode); a separate persistent session home at the same path |
 | Escape to an unsandboxed process | `sbatch`/`srun`/`salloc`, `ssh`/`scp` to another node | Deny script bound over each such host binary, `/run/munge` and `~/.ssh` never mounted. Credentials are excluded **because they enable writes outside the sandbox**, not for secrecy |
 | Network services that write to JHPCE storage on the user's behalf | Globus, a mounted cloud share, a web app with storage access | Out of scope; requires user credentials the agent does not have by default |
 
@@ -50,7 +50,7 @@ Setuid is **not** required for the safety goal: all three runtimes enforce read-
 refuse remounts, and keep supplementary-group read access (`docs/runtime_findings.md`).
 SingularityCE 3.11.4 is the default because it is fastest and shows correct group ownership.
 
-The wrapper calls the runtime by absolute path (`LIBD_AI_SANDBOX_RUNTIME`), never through
+The wrapper calls the runtime by absolute path (`AI_SINGBOX_RUNTIME`), never through
 `module load` (the site runtime modulefiles fail when `HOSTNAME` is unset). Options go on the
 command line only, never via `SINGULARITY_*`/`APPTAINER_*` variables. Running the host-root
 container (§4) under a non-setuid runtime with `--userns` is not yet tested; until it is, the
@@ -90,7 +90,7 @@ Inside the container the agent sees:
 |---|---|---|
 | `/usr`, `/etc`, `/opt`, `/var/lib/sss`, `/var/lib/alternatives` | host | **ro** |
 | `/jhpce/shared` | host | **ro** |
-| `read =` folders of the active profiles; site `default` profile: `/dcs04/lieber`, `/dcs05/lieber`, `/dcs07/lieber` | host NFS exports | **ro** |
+| `read =` folders of the active profiles; site `default` profile includes site profile `libd`: `/dcs04/lieber`, `/dcs05/lieber`, `/dcs07/lieber` | host NFS exports | **ro** |
 | any `--read PATH` | host | **ro**, at the path as typed |
 | `$MYSCRATCH` | host | **rw** by default (`--no-scratch` to drop) |
 | any `--write PATH` | host | **rw**, at the path as typed |
@@ -142,7 +142,7 @@ The wrapper refuses a target that:
 - sits on an autofs map or has filesystems mounted below it.
 
 Writable paths are printed at startup, recorded in the launch log, and exported inside as
-`LIBD_AI_SANDBOX_RW` (colon-separated).
+`AI_SINGBOX_RW` (colon-separated).
 
 ## 7. Escape routes to unsandboxed writes
 
@@ -165,11 +165,11 @@ Writable paths are printed at startup, recorded in the launch log, and exported 
 - In `--home-mode real-rw` the agent can edit dotfiles (`~/.bashrc`, `~/.ssh/authorized_keys`)
   that *host* sessions later execute. That is an escape route by delay; it is why `real-rw` is
   opt-in and announced with a warning.
-- A controlled re-entry wrapper (`libd-ai-sbatch`) is future work.
+- A controlled re-entry wrapper (`ai-singbox-sbatch`) is future work.
 
 ## 8. Home
 
-### 8.1 Home modes (`--home-mode`, or `LIBD_AI_SANDBOX_HOME_MODE`)
+### 8.1 Home modes (`--home-mode`, or `AI_SINGBOX_HOME_MODE`)
 
 | Mode | `$HOME` inside | Use |
 |---|---|---|
@@ -182,8 +182,8 @@ directories at their usual path inside the synthetic home.
 
 ### 8.2 Synthetic home
 
-- Location: `~/.libd-ai-sandbox/home` (durable, backed-up home storage), overridable with
-  `LIBD_AI_SANDBOX_HOME` (e.g. a lab directory). Launch logs: `~/.libd-ai-sandbox/logs/`.
+- Location: `~/.ai-singbox/home` (durable, backed-up home storage), overridable with
+  `AI_SINGBOX_HOME` (e.g. a lab directory). Launch logs: `~/.ai-singbox/logs/`.
   Earlier versions used `$MYSCRATCH/ai-sandbox/home`, which fastscratch purging could delete;
   the wrapper points at it if found.
 - The location is validated like a `--write` target (not the real home or its ancestor, not a
@@ -205,7 +205,7 @@ directories at their usual path inside the synthetic home.
   `~/R/<conda_R version>` first), inserts the matching real libraries
   (`/host_home/R/<version>`, `/host_home/R/<platform>-library/<x.y>`) right after it, then sources
   the synthetic `~/.Rprofile`. Python: for each `pythonX.Y/site-packages` in the real home, a
-  `libd-ai-sandbox-host.pth` in the synthetic user site appends the real one. Result: installed
+  `ai-singbox-host.pth` in the synthetic user site appends the real one. Result: installed
   packages load; `install.packages` and `pip install --user` write to the sandbox home.
 - Agent configuration: see §10. `.ssh`, `.aws`, `.netrc`, `.git-credentials` are never copied.
 
@@ -213,15 +213,17 @@ directories at their usual path inside the synthetic home.
 
 | Layer | Who | Location | Content |
 |---|---|---|---|
-| Site | module maintainers | `$LIBD_AI_SANDBOX_ROOT/etc/` | `mounts.tsv` (system only), `deny-commands.txt`, `profiles/*.conf` incl. `default.conf` (data folders) |
-| User | each user | `~/.config/libd-ai-sandbox/` (`LIBD_AI_SANDBOX_CONFIG_DIR`) | `profiles/*.conf` (a user `default.conf` replaces the site one), `config`, `skel/` |
-| Environment | user, per shell | `LIBD_AI_SANDBOX_*` | home location and mode, runtime, rootfs |
+| Site | module maintainers | `$AI_SINGBOX_ROOT/etc/` | `mounts.tsv` (system only), `deny-commands.txt`, `profiles/*.conf` incl. `default.conf` (data folders) |
+| User | each user | `~/.config/ai-singbox/` (`AI_SINGBOX_CONFIG_DIR`) | `profiles/*.conf` (a user `default.conf` replaces the site one), `config`, `skel/` |
+| Environment | user, per shell | `AI_SINGBOX_*` | home location and mode, runtime, rootfs |
 | Command line | user, per run | options | `--profile`, `--write`, `--read`, `--home-dir`, `--module`, `--home-mode`, ... |
 
 **User entry points**, documented first in the README: data folders (`read =`), writable
 folders (`write =` / `--write`), and the session home (`home =`, whose `.bashrc` is the session
 startup file). All three live in profiles. Without `--profile`, the profile `default` is applied
 (user's copy if present, else the site's), so the standard storage is visible with no setup.
+The site `default` only does `include = libd`; lab- or institute-specific storage lives in its own
+profile (`libd`), so the tool carries no LIBD assumptions in code or system configuration.
 
 Single values resolve in the order built-in, `config`, environment, profiles (in the order
 given), command line; the last one wins. Lists (`module`, `read`, `write`) accumulate.
@@ -243,7 +245,7 @@ Both are `key = value` files, parsed and never sourced; unknown keys abort the l
 | `write` | **no** | yes | writable path (repeatable) |
 | `description` | no | yes | shown by `--list-profiles` |
 | `include` | no | yes | apply another profile first (repeatable; each profile once; depth ≤ 8) |
-| `home` | yes | yes | session home folder; precedence `config` < `LIBD_AI_SANDBOX_HOME` < profile < `--home-dir` |
+| `home` | yes | yes | session home folder; precedence `config` < `AI_SINGBOX_HOME` < profile < `--home-dir` |
 
 A missing `read` folder from a profile or `config` is skipped with a warning (storage may be
 absent on some nodes); a missing `write` folder stops the launch. Per-profile homes separate
@@ -253,11 +255,11 @@ created on first use, others must exist.
 Values may use `~`, `$HOME`, `$USER`, `$MYSCRATCH`; nothing else is expanded. `write` is refused
 in `config` so that nothing becomes writable without an explicit per-run choice (`--write` or
 `--profile`). Every profile path goes through the same validation as the command line.
-`--profile NAME` looks for `~/.config/libd-ai-sandbox/profiles/NAME.conf`, then the site
+`--profile NAME` looks for `~/.config/ai-singbox/profiles/NAME.conf`, then the site
 `etc/profiles/NAME.conf`. `--list-profiles` lists both. Launch logs record the profile files and
 modules used.
 
-Example `~/.config/libd-ai-sandbox/profiles/spatial.conf`:
+Example `~/.config/ai-singbox/profiles/spatial.conf`:
 
 ```text
 description = spatialDLPFC metadata survey
@@ -278,7 +280,7 @@ interactive session then continues in an interactive shell that inherits them.
 - **Site policy knobs**: forbid `real-rw`, cap `--write` to an allow-list of roots
   (e.g. `*/agent_outputs/*`), require a reason string recorded in the log.
 - Per-project `AGENTS.md` injection.
-- **`libd-ai-sbatch`**: submit a job that re-enters the same sandbox with the same binds.
+- **`ai-singbox-sbatch`**: submit a job that re-enters the same sandbox with the same binds.
 
 ## 10. Agents
 
@@ -288,12 +290,12 @@ interactive session then continues in an interactive shell that inherits them.
 ### 10.1 Decoupled from the user's own agent setup
 
 - **Own config folder per agent, per sandbox.** `CODEX_HOME` and `CLAUDE_CONFIG_DIR` are always set:
-  `~/.codex` and `~/.claude` of the synthetic home, or `~/.libd-ai-sandbox/agents/{codex,claude}`
+  `~/.codex` and `~/.claude` of the synthetic home, or `~/.ai-singbox/agents/{codex,claude}`
   with `--home-mode real-ro|real-rw` (made writable in `real-ro`). With `CLAUDE_CONFIG_DIR` set,
   Claude Code keeps its `.claude.json` inside the folder (verified), so nothing lands in `$HOME`.
 - **Separate login by default.** The user logs in once inside the sandbox; it persists with the
   durable home. The tokens are independent of the host logins, so no refresh-token sharing.
-  Codex on a cluster node: `libd-ai-sandbox --agent codex -- login --device-auth`. Claude Code
+  Codex on a cluster node: `ai-singbox --agent codex -- login --device-auth`. Claude Code
   offers `/login` (URL + pasted code) on first start. The startup banner says when no login exists.
 - The user's real `~/.codex`, `~/.claude`, `~/.claude.json` are never read unless named as a seed,
   and never written.
@@ -316,14 +318,14 @@ Done on the host by `libexec/agent-config` before the container starts. Copies a
 
 ### 10.3 Sandbox notes
 
-At every launch a marked block (`<!-- libd-ai-sandbox:begin ... end -->`) in the agent's global
+At every launch a marked block (`<!-- ai-singbox:begin ... end -->`) in the agent's global
 instructions (`AGENTS.md` for Codex, `CLAUDE.md` for Claude) is regenerated: read-only storage,
 the session's writable paths, Slurm/ssh disabled, use modules. Text outside the block is kept.
 
 ### 10.4 Agent CLIs and permissions
 
-- CLIs are found on the user's `PATH` at launch (or `LIBD_AI_SANDBOX_CODEX`, `LIBD_AI_SANDBOX_CLAUDE`)
-  and mounted read-only under `/.libd-ai-sandbox/agents/`, first on `PATH` inside. For Codex
+- CLIs are found on the user's `PATH` at launch (or `AI_SINGBOX_CODEX`, `AI_SINGBOX_CLAUDE`)
+  and mounted read-only under `/.ai-singbox/agents/`, first on `PATH` inside. For Codex
   installed with npm, the native `vendor/<triple>/` folder (binary plus bundled ripgrep) is
   mounted, so no Node.js is needed. Claude Code must be the native binary. Auto-update is disabled
   inside (`DISABLE_AUTOUPDATER=1`); updating stays a host action.
@@ -358,12 +360,12 @@ the session's writable paths, Slurm/ssh disabled, use modules. Text outside the 
 --quiet
 ```
 
-Each launch writes `~/.libd-ai-sandbox/logs/<timestamp>-<pid>.json`: time, user, host, Slurm job
+Each launch writes `~/.ai-singbox/logs/<timestamp>-<pid>.json`: time, user, host, Slurm job
 id, wrapper and runtime versions, host OS, rootfs, mounts files, home mode, writable paths, bind
 table with notes, full command. Logs are a record, not tamper-proof evidence.
 
-`modulefiles/libd_ai_sandbox/0.1.lua` (development) derives its root from its own location,
-prepends `bin` to `PATH`, sets `LIBD_AI_SANDBOX_ROOT` and `LIBD_AI_SANDBOX_RUNTIME`, and guards
+`modulefiles/ai-singbox/0.1.lua` (development) derives its root from its own location,
+prepends `bin` to `PATH`, sets `AI_SINGBOX_ROOT` and `AI_SINGBOX_RUNTIME`, and guards
 against an unset `HOSTNAME`.
 
 ## 12. Open questions
@@ -372,4 +374,4 @@ against an unset `HOSTNAME`.
 - Which of §9.2 to implement before sharing the module?
 - Validate the host-root container under SingularityCE 4.5.1 `--userns` as a fallback.
 - Agent CLIs from per-user installs work; should the shared module also ship site-installed
-  copies under `/jhpce/shared/libd` (set via `LIBD_AI_SANDBOX_CODEX/_CLAUDE` in the modulefile)?
+  copies under `/jhpce/shared/libd` (set via `AI_SINGBOX_CODEX/_CLAUDE` in the modulefile)?

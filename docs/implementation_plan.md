@@ -24,12 +24,12 @@ Measured facts: `docs/runtime_findings.md`. Test suite: `tests/test_wrapper.sh`.
 ## Layout
 
 ```text
-bin/libd-ai-sandbox            wrapper
+bin/ai-singbox            wrapper
 etc/mounts.tsv                 read-only mounts (ro only)
 etc/deny-commands.txt          host binaries masked inside
 libexec/deny                   the mask
 libexec/make-rootfs            creates share/rootfs (not committed)
-modulefiles/libd_ai_sandbox/0.1.lua
+modulefiles/ai-singbox/0.1.lua
 tests/test_wrapper.sh          refusal + live tests (28)
 tests/runtime_probe.sh         raw runtime probe against a SIF (phase 0)
 docs/  worklogs/
@@ -40,12 +40,12 @@ docs/  worklogs/
 For `--agent codex`: copy `~/.codex/{auth.json,config.toml}` into the synthetic home when missing,
 or always with `--refresh-agent-config`; strip `[projects."..."]` trust entries that point at
 paths not writable in the sandbox. For `--agent claude`: `~/.claude/{.credentials.json,settings.json}`
-and `~/.claude.json`. Generate the agent hint file listing `$LIBD_AI_SANDBOX_RW`.
+and `~/.claude.json`. Generate the agent hint file listing `$AI_SINGBOX_RW`.
 Tests: files present in synthetic home, real home unchanged, `.ssh` absent.
 
 ## Phase 7: non-setuid fallback
 
-Run `tests/test_wrapper.sh` with `LIBD_AI_SANDBOX_RUNTIME` pointing at SCE 4.5.1 after adding
+Run `tests/test_wrapper.sh` with `AI_SINGBOX_RUNTIME` pointing at SCE 4.5.1 after adding
 automatic `--userns` when the runtime's `starter-suid` is not setuid-root.
 
 ## Phase 8: agents

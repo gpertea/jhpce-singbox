@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Validation tests for bin/libd-ai-sandbox. Run on a compute or transfer node:
+# Validation tests for bin/ai-singbox. Run on a compute or transfer node:
 #   tests/test_wrapper.sh
 # Uses an isolated synthetic home and config dir under $MYSCRATCH, never the
 # user's real sandbox home. Every write attempted against a read-only location is
@@ -7,13 +7,13 @@
 # The real home is only ever mounted read-only by these tests.
 set -uo pipefail
 REPO=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
-SBX=$REPO/bin/libd-ai-sandbox
+SBX=$REPO/bin/ai-singbox
 TAG=sbx_probe_$$
 T=$MYSCRATCH/.sbx_test_$$
 mkdir -p "$T/config/skel" "$T/config/profiles" "$T/ro_in_scratch"
-export LIBD_AI_SANDBOX_HOME=$T/home
-export LIBD_AI_SANDBOX_CONFIG_DIR=$T/config
-export LIBD_AI_SANDBOX_STATE=$T/state
+export AI_SINGBOX_HOME=$T/home
+export AI_SINGBOX_CONFIG_DIR=$T/config
+export AI_SINGBOX_STATE=$T/state
 REAL_HOME=$(getent passwd "$(id -un)" | cut -d: -f6)
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ok    $*"; }
@@ -51,10 +51,10 @@ expect_refusal "--read real home (synthetic mode)" "real-ro"              -- --r
 expect_refusal "--write autofs parent of a ro mount" "refusing --write /dcs04" -- --write /dcs04
 expect_refusal "--write whole scratch filesystem" "entire filesystem"     -- --write /fastscratch/myscratch
 expect_refusal "bad --home-mode"                  "--home-mode must be"   -- --home-mode bogus
-LIBD_AI_SANDBOX_HOME=/dcs04/lieber expect_refusal "synthetic home = whole ro export" "whole read-only mount" --
-LIBD_AI_SANDBOX_HOME=$REAL_HOME expect_refusal "synthetic home = real home" "real home" --
+AI_SINGBOX_HOME=/dcs04/lieber expect_refusal "synthetic home = whole ro export" "whole read-only mount" --
+AI_SINGBOX_HOME=$REAL_HOME expect_refusal "synthetic home = real home" "real home" --
 { cat "$REPO/etc/mounts.tsv"; printf '/dcs04/lieber/lcolladotor /dcs04/lieber/lcolladotor rw no\n'; } > "$T/bad.tsv"
-LIBD_AI_SANDBOX_MOUNTS=$T/bad.tsv expect_refusal "rw entry in site mounts file" "mode must be 'ro'" --
+AI_SINGBOX_MOUNTS=$T/bad.tsv expect_refusal "rw entry in site mounts file" "mode must be 'ro'" --
 printf 'read = /dcs05\n' > "$T/config/profiles/autofsroot.conf"
 expect_refusal "autofs root as profile read"      "autofs map"            -- --profile autofsroot
 printf 'write = %s\n' "$T/no_such_dir" > "$T/config/profiles/missingwrite.conf"
@@ -73,13 +73,13 @@ expect_refusal "missing seed folder"             "seed folder not found" -- --co
 expect_refusal "--seed-credentials alone"        "needs --codex-seed"    -- --seed-credentials
 out=$("$SBX" --dry-run --write "$WT" 2>&1) && [[ "$out" == *"rw   $WT"* ]] && ok "dry-run lists --write target" || bad "dry-run :: $out"
 out=$("$SBX" --print-binds 2>&1)
-[[ "$out" == *"/dcs04/lieber   [profile default]"* ]] && ok "default profile applied when no --profile is given" || bad "default profile :: $out"
+[[ "$out" == *"/dcs04/lieber   [profile libd]"* ]] && ok "default profile applied when no --profile is given" || bad "default profile :: $out"
 printf 'description = no data\n' > "$T/config/profiles/nodata.conf"
 out=$("$SBX" --print-binds --profile nodata 2>&1)
 [[ "$out" != *"/dcs04/lieber "* ]] && ok "a profile without include = default has no data folders" || bad "nodata :: $out"
 printf 'include = default\ninclude = loopy\nread = %s/no_such_dir\nhome = %s/home_from_profile\n' "$T" "$T" > "$T/config/profiles/loopy.conf"
 out=$("$SBX" --print-binds --profile loopy 2>&1)
-[[ "$out" == *"/dcs04/lieber   [profile default]"* ]] && ok "include = default inherits data folders; self-include is harmless" || bad "include :: $out"
+[[ "$out" == *"/dcs04/lieber   [profile libd]"* ]] && ok "include = default inherits data folders; self-include is harmless" || bad "include :: $out"
 [[ "$out" == *"not found, skipped: $T/no_such_dir"* ]] && ok "missing profile read folder is skipped with a warning" || bad "missing read :: $out"
 [[ "$out" == *"$T/home_from_profile "*"[synthetic home]"* ]] && ok "profile 'home' sets the session home" || bad "profile home :: $out"
 out=$("$SBX" --print-binds --profile loopy --home-dir "$T/home_cli" 2>&1)
@@ -173,7 +173,7 @@ write = $T/prof_out
 PROF
 OUT=$("$SBX" --quiet --profile t --cmd '
 r() { printf "%s\t%s\n" "$1" "$2"; }
-r rw "$LIBD_AI_SANDBOX_RW"
+r rw "$AI_SINGBOX_RW"
 r preloaded "$(command -v R)"
 Rscript -e "cat(.libPaths(), sep=\"\n\")" 2>/dev/null > /tmp/libpaths.'"$TAG"'
 r lib1 "$(sed -n 1p /tmp/libpaths.'"$TAG"')"
@@ -221,7 +221,7 @@ r codex_bin "$(command -v codex)"; r claude_bin "$(command -v claude)"' 2>&1)
     && ok "settings seeded" || bad "settings not seeded"
 [ ! -e "$CX/auth.json" ] && [ ! -e "$CL/.credentials.json" ] && ok "credentials not seeded by default" || bad "credentials seeded without --seed-credentials"
 [ ! -e "$CX/sessions" ] && [ ! -e "$CX/skills/.system" ] && ok "sessions and agent-managed .system skills not copied" || bad "unwanted files copied"
-grep -q '^# my codex rules' "$CX/AGENTS.md" && grep -q 'libd-ai-sandbox:begin' "$CX/AGENTS.md" && grep -q 'libd-ai-sandbox:begin' "$CL/CLAUDE.md" \
+grep -q '^# my codex rules' "$CX/AGENTS.md" && grep -q 'ai-singbox:begin' "$CX/AGENTS.md" && grep -q 'ai-singbox:begin' "$CL/CLAUDE.md" \
     && ok "user instructions kept, sandbox notes block added" || bad "notes block"
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if sorted(d)==["hasCompletedOnboarding"] else 1)' "$CL/.claude.json" \
     && ok ".claude.json: only onboarding settings without credentials" || bad ".claude.json keys :: $(cat "$CL/.claude.json")"
@@ -230,7 +230,7 @@ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if sorte
     && ok "--seed-credentials copies logins with mode 600" || bad "credential seeding"
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if "oauthAccount" in d and "projects" not in d else 1)' "$CL/.claude.json" \
     && ok ".claude.json: account added, history excluded" || bad ".claude.json account :: $(cat "$CL/.claude.json")"
-n1=$(grep -c 'libd-ai-sandbox:begin' "$CX/AGENTS.md")
+n1=$(grep -c 'ai-singbox:begin' "$CX/AGENTS.md")
 [ "$n1" = 1 ] && ok "notes block not duplicated across launches" || bad "notes block count $n1"
 if [ -n "$(get codex_bin)" ]; then
     v=$("$SBX" --quiet --agent codex -- --version 2>/dev/null | grep -c codex-cli)

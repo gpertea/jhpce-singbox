@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Host-side helper for libd-ai-sandbox agent configuration folders.
+"""Host-side helper for ai-singbox agent configuration folders.
 
   agent-config seed  --agent codex|claude --src DIR --dest DIR [--credentials] [--overwrite]
   agent-config notes --agent codex|claude --dest DIR      (block text on stdin)
@@ -30,17 +30,18 @@ NOTES_FILE = {"codex": "AGENTS.md", "claude": "CLAUDE.md"}
 # history/caches.
 CLAUDE_JSON_SETTINGS = ["hasCompletedOnboarding", "lastOnboardingVersion", "theme"]
 CLAUDE_JSON_ACCOUNT = ["oauthAccount", "userID"]
-BEGIN = "<!-- libd-ai-sandbox:begin (managed; regenerated at every launch) -->"
-END = "<!-- libd-ai-sandbox:end -->"
+BEGIN = "<!-- ai-singbox:begin (managed; regenerated at every launch) -->"
+END = "<!-- ai-singbox:end -->"
 
 
 def strip_block(text):
     out, skip = [], False
     for line in text.splitlines(keepends=True):
-        if line.startswith("<!-- libd-ai-sandbox:begin"):
+        # current marker, and the one used before the rename to ai-singbox
+        if line.startswith("<!-- ai-singbox:begin") or line.startswith("<!-- libd-ai-sandbox:begin"):
             skip = True
             continue
-        if line.startswith(END):
+        if line.startswith(END) or line.startswith("<!-- libd-ai-sandbox:end"):
             skip = False
             continue
         if not skip:

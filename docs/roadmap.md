@@ -3,7 +3,7 @@
 Status 2026-10-07: the wrapper works from this repository for its author (`module use
 <repo>/modulefiles`). It is already decoupled from any one account: it locates its own files
 relative to its install location, takes each user's home from `getent`, keeps per-user state in
-`~/.libd-ai-sandbox` and `~/.config/libd-ai-sandbox`, and relies on `$MYSCRATCH`, which the JHPCE
+`~/.ai-singbox` and `~/.config/ai-singbox`, and relies on `$MYSCRATCH`, which the JHPCE
 default environment module (`JHPCE_ROCKY9_DEFAULT_ENV`) sets for every user.
 
 What remains is packaging, a more generic agent model, and validation by other users.
@@ -39,7 +39,7 @@ Wrapper changes:
 - Drop `DISABLE_AUTOUPDATER=1` for agents not mounted from the host (home installs must be able to
   update); keep it for host-mounted ones.
 - **Per-agent descriptors** instead of code: `etc/agents/<name>.conf` (site) and
-  `~/.config/libd-ai-sandbox/agents/<name>.conf` (user), parsed like profiles:
+  `~/.config/ai-singbox/agents/<name>.conf` (user), parsed like profiles:
 
   ```text
   command = codex
@@ -60,7 +60,7 @@ Wrapper changes:
 
 ## 2. Install layout, permissions, versioning
 
-- Install path: `/jhpce/shared/libd/core/libd_ai_sandbox/<version>/`, group `lieber_modules`,
+- Install path: `/jhpce/shared/libd/core/ai-singbox/<version>/`, group `lieber_modules`,
   readable by everyone (`a+rX`). The development repository is `0770` with group
   `lieber_lcolladotor`, and `etc/*.tsv|txt` are `0660`: not readable by other users as is.
 - `libexec/install <prefix>`: copy tracked files (`git archive` of a tag), run `libexec/make-rootfs`
@@ -70,29 +70,30 @@ Wrapper changes:
   (today the modulefile is `0.1` and the wrapper `0.4.0-dev`). Keep `CHANGELOG.md`.
 - The skeleton root (`share/rootfs`) and the wrapper's `ROOT` are on `/jhpce/shared`, already
   visible on every node; nothing else needs deploying per node.
-- Lab-specific storage lives only in `etc/profiles/default.conf` (`read = /dcs04/lieber`, ...);
-  `etc/mounts.tsv` holds system mounts only. A deployment for another group changes the default
-  profile, nothing else. Users override it with their own `profiles/default.conf`.
+- Lab-specific storage lives only in site profiles (`etc/profiles/libd.conf`: `read =
+  /dcs04/lieber`, ...), and `etc/profiles/default.conf` includes it; `etc/mounts.tsv` holds
+  system mounts only. A deployment for another group adds its own storage profile and changes
+  the one `include` line in `default.conf`. Users override `default` with their own copy.
 
 ## 3. Production modulefile (`jhpce_module_config`)
 
-- `libd_ai_sandbox/<version>.lua` with `local root = "/jhpce/shared/libd/core/libd_ai_sandbox/<version>"`
+- `ai-singbox/<version>.lua` with `local root = "/jhpce/shared/libd/core/ai-singbox/<version>"`
   (the development modulefile derives `root` from its own path, which does not hold when
   modulefiles live in a separate tree).
 - Same conventions as other LIBD modules: `help`, `whatis`, `LmodMessage` on load/unload,
   hostname guard that tolerates an unset `HOSTNAME`.
-- Sets `PATH`, `LIBD_AI_SANDBOX_ROOT`, `LIBD_AI_SANDBOX_RUNTIME`; optionally site defaults such as
-  `LIBD_AI_SANDBOX_MOUNTS` for a different mounts file.
+- Sets `PATH`, `AI_SINGBOX_ROOT`, `AI_SINGBOX_RUNTIME`; optionally site defaults such as
+  `AI_SINGBOX_MOUNTS` for a different mounts file.
 - Source and install notes under `jhpce_module_source` (`README.md` with the install commands and
   the reproducibility block, as for other LIBD modules).
 
 ## 4. Documentation for two audiences
 
-- `README.md` (users): replace `module use <repo>/modulefiles` with `module load libd_ai_sandbox`;
+- `README.md` (users): replace `module use <repo>/modulefiles` with `module load ai-singbox`;
   keep the worked example; add "installing an agent in your sandbox home" and "agent modules".
 - `docs/admin.md` (maintainers): site mounts file, deny list, site profiles and agent descriptors,
   install/upgrade/rollback, how to run the tests, where users' state lives
-  (`~/.libd-ai-sandbox`, `~/.config/libd-ai-sandbox`, `$MYSCRATCH/ai-sandbox`).
+  (`~/.ai-singbox`, `~/.config/ai-singbox`, `$MYSCRATCH/ai-sandbox`).
 
 ## 5. Tests that run for any maintainer
 
@@ -108,7 +109,7 @@ Wrapper changes:
 ## 6. Positron / VS Code remote sessions
 
 See `docs/positron_remote_plan.md`: `--sshd PORT`, generated sshd config with `SetEnv` and
-`ForceCommand`, `bin/libd-ai-positron-session` as an adaptable sbatch template, a dedicated
+`ForceCommand`, `bin/ai-singbox-positron` as an adaptable sbatch template, a dedicated
 persistent host key (keys listed in `authorized_keys` are refused), `HostKeyAlias` on the client.
 Tests: refusal of a login key as host key; a session over the alias needs no prompt.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# libd-ai-sandbox: run a shell or an AI agent on JHPCE with LIBD/JHPCE storage
-# mounted read-only. Writable by default: $MYSCRATCH, the synthetic home, /tmp,
+# ai-singbox: customizable Singularity container sandbox for AI agents on JHPCE.
+# Runs a shell or an AI agent with storage mounted read-only. Writable by default: $MYSCRATCH, the synthetic home, /tmp,
 # plus each --write PATH.
 #
 # The container root is a skeleton directory; the host's /usr, /etc, /opt and the
@@ -8,29 +8,29 @@
 # so the environment (modules, conda_R, users) matches the host node.
 set -euo pipefail
 
-PROG=libd-ai-sandbox
+PROG=ai-singbox
 VERSION=0.5.0-dev
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
-ROOT=${LIBD_AI_SANDBOX_ROOT:-$(dirname "$(dirname "$SELF")")}
-RUNTIME=${LIBD_AI_SANDBOX_RUNTIME:-/jhpce/shared/jhpce/core/singularity/3.11.4/bin/singularity}
-MOUNTS=${LIBD_AI_SANDBOX_MOUNTS:-$ROOT/etc/mounts.tsv}
-ROOTFS=${LIBD_AI_SANDBOX_ROOTFS:-$ROOT/share/rootfs}
-DENY_LIST=${LIBD_AI_SANDBOX_DENY:-$ROOT/etc/deny-commands.txt}
+ROOT=${AI_SINGBOX_ROOT:-$(dirname "$(dirname "$SELF")")}
+RUNTIME=${AI_SINGBOX_RUNTIME:-/jhpce/shared/jhpce/core/singularity/3.11.4/bin/singularity}
+MOUNTS=${AI_SINGBOX_MOUNTS:-$ROOT/etc/mounts.tsv}
+ROOTFS=${AI_SINGBOX_ROOTFS:-$ROOT/share/rootfs}
+DENY_LIST=${AI_SINGBOX_DENY:-$ROOT/etc/deny-commands.txt}
 DENY_BIN=$ROOT/libexec/deny
 
 REAL_HOME=$(getent passwd "$(id -un)" | cut -d: -f6)
 REAL_HOME=${REAL_HOME:-$HOME}
-CONFIG_DIR=${LIBD_AI_SANDBOX_CONFIG_DIR:-$REAL_HOME/.config/libd-ai-sandbox}
+CONFIG_DIR=${AI_SINGBOX_CONFIG_DIR:-$REAL_HOME/.config/ai-singbox}
 SKEL=$CONFIG_DIR/skel
-STATE=${LIBD_AI_SANDBOX_STATE:-$REAL_HOME/.libd-ai-sandbox}
-SBX_HOME=${LIBD_AI_SANDBOX_HOME:-$STATE/home}   # final value: after config/profiles
+STATE=${AI_SINGBOX_STATE:-$REAL_HOME/.ai-singbox}
+SBX_HOME=${AI_SINGBOX_HOME:-$STATE/home}   # final value: after config/profiles
 SBX_LOGS=$STATE/logs
 USER_CONFIG=$CONFIG_DIR/config
 USER_PROFILES=$CONFIG_DIR/profiles
 SITE_PROFILES=$ROOT/etc/profiles
 R_HOOK=$ROOT/share/R/sandbox-Rprofile.R
 HOST_HOME_DIR=/host_home      # read-only pieces of the real home, inside the container
-AGENT_MNT=/.libd-ai-sandbox/agents   # agent CLIs, read-only, inside the container
+AGENT_MNT=/.ai-singbox/agents   # agent CLIs, read-only, inside the container
 AGENT_CONFIG_TOOL=$ROOT/libexec/agent-config
 
 # Host paths that may never be made writable.
@@ -41,8 +41,9 @@ usage() {
 Usage: $PROG [options] [-- command [args...]]
 User guide: $ROOT/README.md
 
-Starts a login shell (or the given command) in a container where LIBD/JHPCE storage
-is read-only. Writable: \$MYSCRATCH (unless --no-scratch), the synthetic home, /tmp,
+Customizable Singularity container sandbox for AI agents. Starts a login shell (or
+the given command, or an agent) in a container where all mounted storage is
+read-only. Writable: \$MYSCRATCH (unless --no-scratch), the synthetic home, /tmp,
 and each --write PATH.
 
 Options:
@@ -97,7 +98,7 @@ Agents:
   CLAUDE_CONFIG_DIR): ~/.codex and ~/.claude of the synthetic home, or
   $STATE/agents/ with a real home. Log in once inside; the login persists.
   Your real ~/.codex and ~/.claude are never used unless seeded from.
-  Agent CLIs are found on your PATH (or LIBD_AI_SANDBOX_CODEX/_CLAUDE) and
+  Agent CLIs are found on your PATH (or AI_SINGBOX_CODEX/_CLAUDE) and
   mounted read-only.
 
 Where to customize (details: README.md, "Where to customize"):
@@ -123,18 +124,18 @@ Per-user customization ($CONFIG_DIR):
   environment, profiles, command line.
 
 Environment:
-  LIBD_AI_SANDBOX_HOME          synthetic home location [$SBX_HOME]
-  LIBD_AI_SANDBOX_HOME_MODE     default --home-mode [synthetic]
-  LIBD_AI_SANDBOX_CONFIG_DIR    per-user config dir [$CONFIG_DIR]
-  LIBD_AI_SANDBOX_RUNTIME       runtime binary [$RUNTIME]
-  LIBD_AI_SANDBOX_MOUNTS        site system mounts file [$MOUNTS]
-  LIBD_AI_SANDBOX_ROOTFS        skeleton root directory [$ROOTFS]
-  LIBD_AI_SANDBOX_STATE         per-user state: home, logs, agent folders [$STATE]
-  LIBD_AI_SANDBOX_DENY          list of host commands masked inside [$DENY_LIST]
-  LIBD_AI_SANDBOX_CODEX         codex CLI to mount (default: 'codex' on PATH)
-  LIBD_AI_SANDBOX_CLAUDE        claude CLI to mount (default: 'claude' on PATH)
-  LIBD_AI_SANDBOX_ROOT          install root (default: derived from this script)
-  LIBD_AI_SANDBOX_ANY_HOST      set to skip the compute/transfer node check (testing)
+  AI_SINGBOX_HOME          synthetic home location [$SBX_HOME]
+  AI_SINGBOX_HOME_MODE     default --home-mode [synthetic]
+  AI_SINGBOX_CONFIG_DIR    per-user config dir [$CONFIG_DIR]
+  AI_SINGBOX_RUNTIME       runtime binary [$RUNTIME]
+  AI_SINGBOX_MOUNTS        site system mounts file [$MOUNTS]
+  AI_SINGBOX_ROOTFS        skeleton root directory [$ROOTFS]
+  AI_SINGBOX_STATE         per-user state: home, logs, agent folders [$STATE]
+  AI_SINGBOX_DENY          list of host commands masked inside [$DENY_LIST]
+  AI_SINGBOX_CODEX         codex CLI to mount (default: 'codex' on PATH)
+  AI_SINGBOX_CLAUDE        claude CLI to mount (default: 'claude' on PATH)
+  AI_SINGBOX_ROOT          install root (default: derived from this script)
+  AI_SINGBOX_ANY_HOST      set to skip the compute/transfer node check (testing)
 EOF
 }
 
@@ -264,7 +265,7 @@ if [ "$LIST_PROFILES" = 1 ]; then
     exit 0
 fi
 [ -f "$USER_CONFIG" ] && apply_conf "$USER_CONFIG" config
-[ -n "${LIBD_AI_SANDBOX_HOME_MODE:-}" ] && HOME_MODE=$LIBD_AI_SANDBOX_HOME_MODE
+[ -n "${AI_SINGBOX_HOME_MODE:-}" ] && HOME_MODE=$AI_SINGBOX_HOME_MODE
 # Without --profile, the 'default' profile (user's, else the site's) is used: it is
 # where the standard read-only data folders are listed.
 PROFILE_AUTO=0
@@ -274,7 +275,7 @@ fi
 for pr in "${PROFILES[@]}"; do apply_profile "$pr"; done
 # Session home: built-in < config < environment < profile < --home-dir
 [ -n "$CONF_HOME" ] && SBX_HOME=$CONF_HOME
-[ -n "${LIBD_AI_SANDBOX_HOME:-}" ] && SBX_HOME=$LIBD_AI_SANDBOX_HOME
+[ -n "${AI_SINGBOX_HOME:-}" ] && SBX_HOME=$AI_SINGBOX_HOME
 [ -n "$PROFILE_HOME" ] && SBX_HOME=$PROFILE_HOME
 [ -n "$CLI_HOME_DIR" ] && SBX_HOME=$(expand_value "$CLI_HOME_DIR")
 [[ "$SBX_HOME" == /* ]] || SBX_HOME=$(realpath -m -- "$SBX_HOME")
@@ -310,7 +311,7 @@ esac
 HOST=$(hostname)
 case "${HOST%%.*}" in
     compute-*|transfer-*) ;;
-    *) [ -n "${LIBD_AI_SANDBOX_ANY_HOST:-}" ] ||
+    *) [ -n "${AI_SINGBOX_ANY_HOST:-}" ] ||
        die "run this on a compute or transfer node (e.g. 'srun --pty bash'), not on $HOST" ;;
 esac
 [ -x "$RUNTIME" ] || die "container runtime not found or not executable: $RUNTIME"
@@ -494,7 +495,7 @@ if [ "$HOME_MODE" = synthetic ] && [ "$PERSONAL_LIBS" = 1 ]; then
         PERSONAL_R=$(readlink -f "$REAL_HOME/R")
         RO_PLAN+=("$PERSONAL_R"$'\t'"$HOST_HOME_DIR/R"$'\t'"personal R libs")
         [ -f "$R_HOOK" ] || die "R profile hook missing: $R_HOOK"
-        RO_PLAN+=("$R_HOOK"$'\t'"/.libd-ai-sandbox/Rprofile.R"$'\t'"R hook")
+        RO_PLAN+=("$R_HOOK"$'\t'"/.ai-singbox/Rprofile.R"$'\t'"R hook")
     fi
     if [ -d "$REAL_HOME/.local/lib" ]; then
         PERSONAL_PY=$(readlink -f "$REAL_HOME/.local/lib")
@@ -509,7 +510,7 @@ is_elf() { [ -f "$1" ] && [ "$(head -c4 "$1" 2>/dev/null | od -An -c | tr -d ' '
 CODEX_SRC=""; CODEX_DST=""; CLAUDE_SRC=""
 resolve_codex() {
     local p r d c
-    p=${LIBD_AI_SANDBOX_CODEX:-$(command -v codex 2>/dev/null || true)}
+    p=${AI_SINGBOX_CODEX:-$(command -v codex 2>/dev/null || true)}
     [ -n "$p" ] || return 1
     r=$(readlink -f "$p") || return 1
     if is_elf "$r"; then CODEX_SRC=$r; CODEX_DST=$AGENT_MNT/codex/bin/codex; return 0; fi
@@ -521,19 +522,19 @@ resolve_codex() {
 }
 resolve_claude() {
     local p r
-    p=${LIBD_AI_SANDBOX_CLAUDE:-$(command -v claude 2>/dev/null || true)}
+    p=${AI_SINGBOX_CLAUDE:-$(command -v claude 2>/dev/null || true)}
     [ -n "$p" ] || return 1
     r=$(readlink -f "$p") || return 1
     is_elf "$r" || return 2
     CLAUDE_SRC=$r
 }
 if resolve_codex; then RO_PLAN+=("$CODEX_SRC"$'\t'"$CODEX_DST"$'\t'"codex CLI")
-elif [ "$AGENT" = codex ]; then die "codex CLI not found (put it on PATH or set LIBD_AI_SANDBOX_CODEX)"; fi
+elif [ "$AGENT" = codex ]; then die "codex CLI not found (put it on PATH or set AI_SINGBOX_CODEX)"; fi
 rc=0; resolve_claude || rc=$?
 if [ $rc = 0 ]; then RO_PLAN+=("$CLAUDE_SRC"$'\t'"$AGENT_MNT/claude/bin/claude"$'\t'"claude CLI")
 elif [ "$AGENT" = claude ]; then
-    [ $rc = 2 ] && die "claude on PATH is not the native Claude Code binary; install the native build or set LIBD_AI_SANDBOX_CLAUDE"
-    die "claude CLI not found (put it on PATH or set LIBD_AI_SANDBOX_CLAUDE)"
+    [ $rc = 2 ] && die "claude on PATH is not the native Claude Code binary; install the native build or set AI_SINGBOX_CLAUDE"
+    die "claude CLI not found (put it on PATH or set AI_SINGBOX_CLAUDE)"
 fi
 
 # Each agent's own config folder for this sandbox: host path and container path.
@@ -698,7 +699,7 @@ else
 fi
 EXTRA_ENV=(--env "CODEX_HOME=$CODEX_DIR_IN" --env "CLAUDE_CONFIG_DIR=$CLAUDE_DIR_IN"
            --env "DISABLE_AUTOUPDATER=1")
-[ -n "$PERSONAL_R" ] && EXTRA_ENV+=(--env "R_PROFILE_USER=/.libd-ai-sandbox/Rprofile.R")
+[ -n "$PERSONAL_R" ] && EXTRA_ENV+=(--env "R_PROFILE_USER=/.ai-singbox/Rprofile.R")
 
 CMD=("$RUNTIME" exec
      --contain --cleanenv --no-mount cwd
@@ -707,9 +708,9 @@ CMD=("$RUNTIME" exec
      --pwd "$INNER_PWD"
      --env "TERM=${TERM:-xterm}"
      --env "XDG_CACHE_HOME=$SBX_CACHE"
-     --env "LIBD_AI_SANDBOX=$VERSION"
-     --env "LIBD_AI_SANDBOX_HOME_MODE=$HOME_MODE"
-     --env "LIBD_AI_SANDBOX_RW=$RW_LIST"
+     --env "AI_SINGBOX=$VERSION"
+     --env "AI_SINGBOX_HOME_MODE=$HOME_MODE"
+     --env "AI_SINGBOX_RW=$RW_LIST"
      "${EXTRA_ENV[@]}"
      "${BIND_ARGS[@]}"
      "$ROOTFS"
@@ -819,18 +820,18 @@ init_synthetic_home() {
             [ -d "$sp" ] || continue
             v=$(basename "$(dirname "$sp")")
             mkdir -p "$SBX_HOME/.local/lib/$v/site-packages"
-            echo "$HOST_HOME_DIR/.local/lib/$v/site-packages" > "$SBX_HOME/.local/lib/$v/site-packages/libd-ai-sandbox-host.pth"
+            echo "$HOST_HOME_DIR/.local/lib/$v/site-packages" > "$SBX_HOME/.local/lib/$v/site-packages/ai-singbox-host.pth"
         done
     fi
     if [ ! -e "$SBX_HOME/.bashrc" ]; then
         {
-            echo "# ~/.bashrc of the libd-ai-sandbox synthetic home (not your real home)."
+            echo "# ~/.bashrc of the ai-singbox synthetic home (not your real home)."
             echo "# Host path: $SBX_HOME/.bashrc"
             cat <<'EOF'
 # Edit it from the host or inside the sandbox (nano ~/.bashrc); in a running
 # session apply changes with 'source ~/.bashrc'. The wrapper never overwrites this
 # file. For a template that survives --reset-home, keep a copy in
-# ~/.config/libd-ai-sandbox/skel/.bashrc (on the host).
+# ~/.config/ai-singbox/skel/.bashrc (on the host).
 # Runs at the start of every session, after the JHPCE site profile, so it is the
 # place for 'module load ...' lines. Do not 'set -u' before module commands.
 [ -f /etc/bashrc ] && . /etc/bashrc
@@ -841,10 +842,13 @@ EOF
         } > "$SBX_HOME/.bashrc"
     fi
     if [ ! -e "$SBX_HOME/.bash_profile" ]; then
-        printf '%s\n' '# Generated by libd-ai-sandbox' '[ -f ~/.bashrc ] && . ~/.bashrc' > "$SBX_HOME/.bash_profile"
+        printf '%s\n' '# Generated by ai-singbox' '[ -f ~/.bashrc ] && . ~/.bashrc' > "$SBX_HOME/.bash_profile"
     fi
 }
 
+if [ ! -e "$STATE" ] && [ -d "$REAL_HOME/.libd-ai-sandbox" ]; then
+    warn "found state of the previous name: $REAL_HOME/.libd-ai-sandbox; to keep it: mv $REAL_HOME/.libd-ai-sandbox $STATE"
+fi
 mkdir -p "$SCR" "$SBX_WORK" "$SBX_CACHE" "$SBX_LOGS"
 chmod 700 "$SCR" "$STATE" 2>/dev/null || true
 if [ "$HOME_MODE" = synthetic ]; then init_synthetic_home; fi
@@ -857,12 +861,20 @@ seed_out=""
 [ -n "$CODEX_SEED" ] && seed_out+=$("$AGENT_CONFIG_TOOL" seed --agent codex --src "$CODEX_SEED" --dest "$CODEX_DIR_HOST" "${SEED_ARGS[@]}")$'\n'
 [ -n "$CLAUDE_SEED" ] && seed_out+=$("$AGENT_CONFIG_TOOL" seed --agent claude --src "$CLAUDE_SEED" --dest "$CLAUDE_DIR_HOST" "${SEED_ARGS[@]}")$'\n'
 NOTES=$(
-    echo "## libd-ai-sandbox"
+    echo "## ai-singbox"
     echo
-    echo "You are running inside libd-ai-sandbox on JHPCE (container $PROG $VERSION)."
-    echo "LIBD/JHPCE storage (/dcs*/lieber, /jhpce/shared) and system paths are mounted"
-    echo "read-only on purpose; writes there fail with 'Read-only file system'. Do not try"
-    echo "to work around this. Writable locations in this session:"
+    echo "You are running inside ai-singbox on JHPCE (container $PROG $VERSION)."
+    echo "Storage is mounted read-only on purpose; writes there fail with 'Read-only file"
+    echo "system'. Do not try to work around this. Read-only data folders in this session:"
+    echo
+    for row in "${BIND_TABLE[@]}"; do
+        IFS=$'\t' read -r m s d n <<<"$row"
+        [ "$m" = ro ] || continue
+        case "$n" in "profile "*|config|--read) echo "- $d" ;; esac
+    done
+    echo "- /jhpce/shared and system paths (/usr, /etc, /opt)"
+    echo
+    echo "Writable locations in this session:"
     echo
     for w in "${WRITABLE[@]}" "/tmp (scratch-backed)"; do echo "- ${w%% (synthetic:*}"; done
     echo
@@ -885,7 +897,7 @@ write_log "$LOG"
 
 if [ "$QUIET" != 1 ]; then
     {
-        echo "$PROG $VERSION: LIBD/JHPCE storage is read-only in this session."
+        echo "$PROG $VERSION: mounted storage is read-only in this session."
         pl=""; for f in "${PROFILE_FILES[@]}"; do pl+="$(basename "$f" .conf) "; done
         echo "  profile:  ${pl:-(none)}$([ "$PROFILE_AUTO" = 1 ] && echo '(automatic: no --profile given)')"
         [ "$HOME_MODE" = synthetic ] && echo "  home:     $SBX_HOME (edit its .bashrc to customize sessions)"

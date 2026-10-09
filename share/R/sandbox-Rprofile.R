@@ -1,4 +1,4 @@
-## libd-ai-sandbox user R profile (set via R_PROFILE_USER inside the sandbox).
+## ai-singbox user R profile (set via R_PROFILE_USER inside the sandbox).
 ## Runs after the site Rprofile.site, which has already put the writable sandbox
 ## library (~/R/<version> in the synthetic home) first in .libPaths().
 ## Adds the real home's personal libraries, mounted read-only at /host_home/R, right

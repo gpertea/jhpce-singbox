@@ -1,7 +1,7 @@
-# ai-singbox
+# libd-ai-sandbox
 
 Run an AI agent (Codex, Claude Code) or a plain shell on JHPCE so that it **cannot
-create, change or delete anything on cluster storage** except in folders you name
+create, change or delete anything on LIBD/JHPCE storage** except in folders you name
 for that run. It keeps your full *read* access, at the usual paths, with the usual
 JHPCE modules.
 
@@ -37,68 +37,54 @@ what that world looks like, and each one is a line in a plain-text file that you
 
 | What you want to change | Where | Default |
 |---|---|---|
-| **Which data folders are visible, read-only** | `read = /path` lines in a profile | the `default` profile, which on this installation includes the `libd` profile: `/dcs04/lieber`, `/dcs05/lieber`, `/dcs07/lieber` |
+| **Which data folders are visible, read-only** | `read = /path` lines in a profile | the `default` profile: `/dcs04/lieber`, `/dcs05/lieber`, `/dcs07/lieber` |
 | **Which folders are writable** | `write = /path` lines in a profile, or `--write /path` on the command line | none (only `$MYSCRATCH`, the session home and `/tmp` are writable) |
-| **The session home**: `~/.bashrc` (modules, aliases), agent logins, installed packages | the folder named by `home = /path` in a profile; edit `.bashrc` in that folder | `~/.ai-singbox/home` (so: `~/.ai-singbox/home/.bashrc`) |
+| **The session home**: `~/.bashrc` (modules, aliases), agent logins, installed packages | the folder named by `home = /path` in a profile; edit `.bashrc` in that folder | `~/.libd-ai-sandbox/home` (so: `~/.libd-ai-sandbox/home/.bashrc`) |
 
-**Profiles.** A profile is a small text file, `~/.config/ai-singbox/profiles/NAME.conf`,
-used with `ai-singbox --profile NAME`. When you give no `--profile`, the profile
-named `default` is used. The module ships its profiles in its own folder,
-`$AI_SINGBOX_ROOT/etc/profiles/` (read-only for users):
+**Profiles.** A profile is a small text file, `~/.config/libd-ai-sandbox/profiles/NAME.conf`,
+used with `libd-ai-sandbox --profile NAME`. When you give no `--profile`, the profile
+named `default` is used. The module ships one in its own folder,
+`$LIBD_AI_SANDBOX_ROOT/etc/profiles/default.conf` (read-only for users). It looks like this:
 
-- `default.conf`: what a session shows when you name no profile. On this installation it
-  only includes the `libd` profile:
+```text
+description = LIBD storage, read-only
 
-  ```text
-  description = standard session: LIBD storage read-only
+# ---- read-only data folders ----
+read = /dcs04/lieber
+read = /dcs05/lieber
+read = /dcs07/lieber
 
-  # ---- read-only data folders ----
-  include = libd
-  # More folders: read = /path
+# ---- writable folders ----
+# none by default; add 'write = /existing/folder' lines in your own profiles
 
-  # ---- writable folders ----
-  # none by default; add 'write = /existing/folder' lines in your own profiles
-
-  # ---- session home ----
-  # home = ~/.ai-singbox/home
-  ```
-
-- `libd.conf`: the LIBD storage on JHPCE:
-
-  ```text
-  description = LIBD storage on JHPCE, read-only
-  read = /dcs04/lieber
-  read = /dcs05/lieber
-  read = /dcs07/lieber
-  ```
-
-ai-singbox itself is not tied to LIBD: another group's installation ships its own storage
-profile and includes that from `default` instead.
+# ---- session home ----
+# home = ~/.libd-ai-sandbox/home
+```
 
 To change what *every* session sees, copy it and edit your copy; your copy replaces the
 module's:
 
 ```bash
-mkdir -p ~/.config/ai-singbox/profiles
-cp $AI_SINGBOX_ROOT/etc/profiles/default.conf ~/.config/ai-singbox/profiles/
-nano ~/.config/ai-singbox/profiles/default.conf
+mkdir -p ~/.config/libd-ai-sandbox/profiles
+cp $LIBD_AI_SANDBOX_ROOT/etc/profiles/default.conf ~/.config/libd-ai-sandbox/profiles/
+nano ~/.config/libd-ai-sandbox/profiles/default.conf
 ```
 
 To set up a **project**, make a new profile that starts from the default and adds its
 writable folder (and, if you like, its own home):
 
 ```text
-# ~/.config/ai-singbox/profiles/myproject.conf
+# ~/.config/libd-ai-sandbox/profiles/myproject.conf
 description = my project
 include = default
 write = /dcs04/lieber/<lab>/<project>/agent_out
-# home = ~/.ai-singbox/homes/myproject
+# home = ~/.libd-ai-sandbox/homes/myproject
 ```
 
 ```bash
 mkdir -p /dcs04/lieber/<lab>/<project>/agent_out   # writable folders must exist first
-ai-singbox --profile myproject --dry-run      # check: 'ro' and 'rw' lines
-ai-singbox --profile myproject
+libd-ai-sandbox --profile myproject --dry-run      # check: 'ro' and 'rw' lines
+libd-ai-sandbox --profile myproject
 ```
 
 **One home or several?** By default all sessions share one home. A profile with its own
@@ -107,11 +93,11 @@ packages. That keeps projects apart, at the cost of logging in to the agents and
 up `.bashrc` once per home. A home under your real home or under `$MYSCRATCH` is created
 on first use; elsewhere, create it first.
 
-**Always check before starting:** `ai-singbox --profile NAME --dry-run` lists every
+**Always check before starting:** `libd-ai-sandbox --profile NAME --dry-run` lists every
 mounted folder (`ro` = read-only, `rw` = writable), which profile line it came from, and
 the session home.
 
-Not for users: `$AI_SINGBOX_ROOT/etc/mounts.tsv` lists the *system* folders every
+Not for users: `$LIBD_AI_SANDBOX_ROOT/etc/mounts.tsv` lists the *system* folders every
 session needs (`/usr`, `/etc`, `/opt`, `/jhpce/shared`); module maintainers manage it.
 
 ## Quick start
@@ -121,10 +107,10 @@ The sandbox runs on a compute or transfer node, inside your Slurm allocation:
 ```bash
 srun --pty -p shared --mem=16G -c 4 -t 8:00:00 bash
 module use /dcs04/lieber/lcolladotor/dbDev_LIBD001/jhpce-singbox/modulefiles   # until installed site-wide
-module load ai-singbox/0.1
+module load libd_ai_sandbox/0.1
 
-ai-singbox --dry-run          # show what would be mounted, start nothing
-ai-singbox                    # a shell inside the sandbox
+libd-ai-sandbox --dry-run          # show what would be mounted, start nothing
+libd-ai-sandbox                    # a shell inside the sandbox
 ```
 
 At start it prints the writable locations. Try:
@@ -174,7 +160,7 @@ around it stays read-only.
 
 ```bash
 mkdir -p /dcs04/lieber/marmaypag/data-inventory        # on the host, once
-ai-singbox --write /dcs04/lieber/marmaypag/data-inventory
+libd-ai-sandbox --write /dcs04/lieber/marmaypag/data-inventory
 ```
 
 Inside, `/dcs04/lieber/marmaypag/data-inventory` is writable; its parent
@@ -205,8 +191,8 @@ folder) is visible read-only; only the output folder is opened for writing.
 
 ```bash
 mkdir -p /dcs04/lieber/marmaypag/data-inventory
-mkdir -p ~/.config/ai-singbox/profiles
-cp $AI_SINGBOX_ROOT/examples/profiles/marmaypag-inventory.conf ~/.config/ai-singbox/profiles/
+mkdir -p ~/.config/libd-ai-sandbox/profiles
+cp $LIBD_AI_SANDBOX_ROOT/examples/profiles/marmaypag-inventory.conf ~/.config/libd-ai-sandbox/profiles/
 ```
 
 The profile ([examples/profiles/marmaypag-inventory.conf](examples/profiles/marmaypag-inventory.conf)):
@@ -215,7 +201,7 @@ The profile ([examples/profiles/marmaypag-inventory.conf](examples/profiles/marm
 description = R-object inventory of /dcs04/lieber/marmaypag
 include = default
 write = /dcs04/lieber/marmaypag/data-inventory
-# home = ~/.ai-singbox/homes/marmaypag-inventory
+# home = ~/.libd-ai-sandbox/homes/marmaypag-inventory
 module = conda_R/4.5.x
 ```
 
@@ -226,7 +212,7 @@ largest objects you want opened:
 ```bash
 srun --pty -p shared --mem=64G -c 8 -t 2-00:00:00 bash
 module use /dcs04/lieber/lcolladotor/dbDev_LIBD001/jhpce-singbox/modulefiles
-module load ai-singbox/0.1
+module load libd_ai_sandbox/0.1
 ```
 
 **3. Check, then start the agent** from the lab folder (the agent starts in the folder
@@ -234,8 +220,8 @@ you launch from):
 
 ```bash
 cd /dcs04/lieber/marmaypag
-ai-singbox --profile marmaypag-inventory --agent claude --dry-run
-ai-singbox --profile marmaypag-inventory --agent claude --claude-seed ~/.claude
+libd-ai-sandbox --profile marmaypag-inventory --agent claude --dry-run
+libd-ai-sandbox --profile marmaypag-inventory --agent claude --claude-seed ~/.claude
 ```
 
 The first time, log in when the agent asks (see [Agents](#agents-login-settings-permissions)).
@@ -246,7 +232,7 @@ The first time, log in when the agent asks (see [Agents](#agents-login-settings-
 asks for a file list first, one R process per object with a timeout and a size limit,
 resumable output (`objects.jsonl`, `objects.tsv`, `SUMMARY.md`) and its scripts saved
 under `data-inventory/scripts/`. Paste it, or tell the agent:
-`Read $AI_SINGBOX_ROOT/examples/prompts/r-object-inventory.md and do it.`
+`Read $LIBD_AI_SANDBOX_ROOT/examples/prompts/r-object-inventory.md and do it.`
 
 **Unattended runs.** By default the agent asks before running commands. To let it run
 without asking, add `--yolo`. The sandbox still blocks every write outside
@@ -262,8 +248,8 @@ With Codex instead: replace `--agent claude --claude-seed ~/.claude` with
 host account; you log in once and it is remembered.
 
 ```bash
-ai-singbox --agent codex -- login --device-auth    # Codex: prints a code to enter in a browser
-ai-singbox --agent claude                          # Claude Code: offers /login on start
+libd-ai-sandbox --agent codex -- login --device-auth    # Codex: prints a code to enter in a browser
+libd-ai-sandbox --agent claude                          # Claude Code: offers /login on start
 ```
 
 **Bringing your settings.** `--codex-seed ~/.codex` and `--claude-seed ~/.claude` copy
@@ -287,8 +273,8 @@ With `--yolo` they do not ask.
 **Passing arguments.** Everything after `--` goes to the agent:
 
 ```bash
-ai-singbox --agent claude -- -p "summarize the README in this folder"
-ai-singbox --agent codex -- exec "list the largest .rds files here"
+libd-ai-sandbox --agent claude -- -p "summarize the README in this folder"
+libd-ai-sandbox --agent codex -- exec "list the largest .rds files here"
 ```
 
 The agent programs are taken from your `PATH` (`codex`, `claude`) and mounted read-only;
@@ -297,7 +283,7 @@ updates happen outside the sandbox.
 ## Your sandbox home and session setup
 
 Inside, `$HOME` has your normal path (`/users/$USER`) but is a separate folder on the
-host: `~/.ai-singbox/home`, or the folder a profile names with `home =` (or
+host: `~/.libd-ai-sandbox/home`, or the folder a profile names with `home =` (or
 `--home-dir DIR` for one run). It persists between sessions. Your real home is not
 visible, so the agent cannot change your dotfiles, ssh keys or R setup. The startup
 banner prints which home a session uses.
@@ -306,12 +292,12 @@ banner prints which home a session uses.
 the sandbox's `~/.bashrc`. Put `module load` lines, aliases and variables there:
 
 ```bash
-nano ~/.ai-singbox/home/.bashrc      # from the host (or <home>/.bashrc of your profile)
+nano ~/.libd-ai-sandbox/home/.bashrc      # from the host (or <home>/.bashrc of your profile)
 nano ~/.bashrc                            # or from inside; then: source ~/.bashrc
 ```
 
 To keep a template that survives `--reset-home`, put files in
-`~/.config/ai-singbox/skel/` (for example `skel/.bashrc`); they are copied into the
+`~/.config/libd-ai-sandbox/skel/` (for example `skel/.bashrc`); they are copied into the
 sandbox home whenever missing there.
 
 **Your installed R and Python packages** work inside: your real `~/R` and
@@ -327,9 +313,9 @@ modes `~/.ssh` appears empty inside, so your login keys stay out of reach.
 ## Profiles and defaults
 
 Profiles are introduced in [Where to customize](#where-to-customize-read-this-first).
-In short: `~/.config/ai-singbox/profiles/NAME.conf` (yours) or the module's
+In short: `~/.config/libd-ai-sandbox/profiles/NAME.conf` (yours) or the module's
 `etc/profiles/NAME.conf` (shared); yours wins when both exist. `default` is used when no
-`--profile` is given. `ai-singbox --list-profiles` lists them.
+`--profile` is given. `libd-ai-sandbox --list-profiles` lists them.
 
 A fuller example:
 
@@ -338,7 +324,7 @@ description = spatial DLPFC metadata survey
 include = default
 read = /dcs05/lieber/<lab>/<other-project>
 write = /dcs04/lieber/<lab>/agent_outputs/spatial
-home = ~/.ai-singbox/homes/spatial
+home = ~/.libd-ai-sandbox/homes/spatial
 module = conda_R/4.5.x
 agent = codex
 codex_seed = ~/.codex
@@ -351,14 +337,14 @@ codex_seed = ~/.codex
 - A `read` folder that does not exist on a node is skipped with a warning; a `write`
   folder that does not exist stops the launch (create it first).
 
-`~/.config/ai-singbox/config` holds your personal defaults with the same keys,
+`~/.config/libd-ai-sandbox/config` holds your personal defaults with the same keys,
 except `write` and `include`: writable folders always come from a profile or the command
 line, chosen for that run. Precedence for single values: `config` < environment <
 profiles < command line.
 
 ## Option reference
 
-`ai-singbox --help` prints the same list with your actual paths.
+`libd-ai-sandbox --help` prints the same list with your actual paths.
 
 ### Command-line options
 
@@ -392,13 +378,13 @@ profiles < command line.
 
 | Location | Purpose |
 |---|---|
-| `~/.config/ai-singbox/profiles/NAME.conf` | your profiles: data folders, writable folders, home |
-| `~/.config/ai-singbox/profiles/default.conf` | your default profile (replaces the module's) |
-| `~/.config/ai-singbox/config` | your defaults (`key = value`) |
-| `~/.config/ai-singbox/skel/` | template files copied into the sandbox home when missing |
-| `~/.ai-singbox/home/` | the default session home (`$HOME` inside) |
-| `~/.ai-singbox/logs/` | one JSON record per launch |
-| `~/.ai-singbox/agents/` | agent config folders when a real home is used |
+| `~/.config/libd-ai-sandbox/profiles/NAME.conf` | your profiles: data folders, writable folders, home |
+| `~/.config/libd-ai-sandbox/profiles/default.conf` | your default profile (replaces the module's) |
+| `~/.config/libd-ai-sandbox/config` | your defaults (`key = value`) |
+| `~/.config/libd-ai-sandbox/skel/` | template files copied into the sandbox home when missing |
+| `~/.libd-ai-sandbox/home/` | the default session home (`$HOME` inside) |
+| `~/.libd-ai-sandbox/logs/` | one JSON record per launch |
+| `~/.libd-ai-sandbox/agents/` | agent config folders when a real home is used |
 | `$MYSCRATCH/ai-sandbox/work/`, `.../cache/` | `/tmp` and caches |
 | `<module>/etc/profiles/` | site profiles, including `default.conf` |
 | `<module>/etc/mounts.tsv`, `etc/deny-commands.txt` | system mounts and masked commands (maintainers) |
@@ -427,20 +413,20 @@ Values may use `~`, `$HOME`, `$USER`, `$MYSCRATCH`. Precedence for single values
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AI_SINGBOX_HOME` | `~/.ai-singbox/home` | session home (a profile's `home =` and `--home-dir` win) |
-| `AI_SINGBOX_HOME_MODE` | `synthetic` | default `--home-mode` |
-| `AI_SINGBOX_STATE` | `~/.ai-singbox` | home, logs, agent folders |
-| `AI_SINGBOX_CONFIG_DIR` | `~/.config/ai-singbox` | your configuration folder |
-| `AI_SINGBOX_MOUNTS` | `<module>/etc/mounts.tsv` | system mounts file (maintainers) |
-| `AI_SINGBOX_DENY` | `<module>/etc/deny-commands.txt` | host commands masked inside |
-| `AI_SINGBOX_CODEX`, `AI_SINGBOX_CLAUDE` | `codex`/`claude` on `PATH` | agent programs to mount |
-| `AI_SINGBOX_RUNTIME` | SingularityCE 3.11.4 | container runtime binary |
-| `AI_SINGBOX_ROOTFS` | `<module>/share/rootfs` | container root skeleton |
-| `AI_SINGBOX_ROOT` | the module folder | install root |
-| `AI_SINGBOX_ANY_HOST` | unset | skip the node check (testing only) |
+| `LIBD_AI_SANDBOX_HOME` | `~/.libd-ai-sandbox/home` | session home (a profile's `home =` and `--home-dir` win) |
+| `LIBD_AI_SANDBOX_HOME_MODE` | `synthetic` | default `--home-mode` |
+| `LIBD_AI_SANDBOX_STATE` | `~/.libd-ai-sandbox` | home, logs, agent folders |
+| `LIBD_AI_SANDBOX_CONFIG_DIR` | `~/.config/libd-ai-sandbox` | your configuration folder |
+| `LIBD_AI_SANDBOX_MOUNTS` | `<module>/etc/mounts.tsv` | system mounts file (maintainers) |
+| `LIBD_AI_SANDBOX_DENY` | `<module>/etc/deny-commands.txt` | host commands masked inside |
+| `LIBD_AI_SANDBOX_CODEX`, `LIBD_AI_SANDBOX_CLAUDE` | `codex`/`claude` on `PATH` | agent programs to mount |
+| `LIBD_AI_SANDBOX_RUNTIME` | SingularityCE 3.11.4 | container runtime binary |
+| `LIBD_AI_SANDBOX_ROOTFS` | `<module>/share/rootfs` | container root skeleton |
+| `LIBD_AI_SANDBOX_ROOT` | the module folder | install root |
+| `LIBD_AI_SANDBOX_ANY_HOST` | unset | skip the node check (testing only) |
 
-Inside the sandbox: `AI_SINGBOX` (version), `AI_SINGBOX_RW` (writable paths,
-colon-separated), `AI_SINGBOX_HOME_MODE`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`,
+Inside the sandbox: `LIBD_AI_SANDBOX` (version), `LIBD_AI_SANDBOX_RW` (writable paths,
+colon-separated), `LIBD_AI_SANDBOX_HOME_MODE`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`,
 `XDG_CACHE_HOME`.
 
 ## Troubleshooting
@@ -468,7 +454,7 @@ What to expect on your laptop:
 
 - **Logins** keep working without prompts: your existing keys are accepted as today.
 - **Host key.** The sandboxed sshd has its own host key, created once and kept in
-  `~/.ai-singbox/sshd/`. It is not your `~/.ssh/id_rsa`: that key logs in to every
+  `~/.libd-ai-sandbox/sshd/`. It is not your `~/.ssh/id_rsa`: that key logs in to every
   JHPCE node, and an sshd host key is readable by everything inside the sandbox.
 - **Why an alias is needed.** `known_hosts` stores keys per host *and* port. Each job
   lands on a different node and port, so even a stable key would look new every time,
@@ -476,7 +462,7 @@ What to expect on your laptop:
   these sessions:
 
   ```text
-  HostKeyAlias ai-singbox-<user>
+  HostKeyAlias libd-ai-sandbox-<user>
   ```
 
   Then run one manual `ssh` to the first sandboxed session to accept the key. Every later
@@ -486,7 +472,7 @@ What to expect on your laptop:
   otherwise the two keys collide under one name.
 - **If the sandbox host key changes** (deleted, regenerated), ssh refuses with
   `REMOTE HOST IDENTIFICATION HAS CHANGED`. Remove the old entry once:
-  `ssh-keygen -R ai-singbox-<user>`, then connect manually again.
+  `ssh-keygen -R libd-ai-sandbox-<user>`, then connect manually again.
 - If your ssh entry already disables host-key checking for compute nodes
   (`StrictHostKeyChecking no`, `UserKnownHostsFile /dev/null`), nothing changes, at the
   cost of not detecting a wrong host.

@@ -1,6 +1,6 @@
 # Task: inventory R objects under /dcs04/lieber/marmaypag
 
-You are running inside libd-ai-sandbox: everything under /dcs04/lieber is read-only
+You are running inside ai-singbox: everything under /dcs04/lieber is read-only
 except `/dcs04/lieber/marmaypag/data-inventory`, which is where all your output goes.
 Use `$MYSCRATCH` or `/tmp` for scratch files. Slurm is not available; work within this
 session's CPUs and memory (`nproc`, `free -g`).

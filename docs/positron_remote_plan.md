@@ -12,7 +12,7 @@ with the user's full write access.
 
 ## Idea
 
-Run that `sshd` *inside* libd-ai-sandbox. Every ssh session is then a child of a process inside
+Run that `sshd` *inside* ai-singbox. Every ssh session is then a child of a process inside
 the container, so the Positron server, its terminals, R sessions and the AI assistant all see
 read-only storage, the synthetic home, and only the configured writable folders. Which folders
 are writable becomes a per-job choice (profile or `--write` in the sbatch script).
@@ -37,10 +37,10 @@ A throwaway sshd (own host key, throwaway client key, localhost only) inside the
 
 ### Wrapper: `--sshd PORT` mode
 
-`libd-ai-sandbox [usual options] --sshd PORT` runs `/usr/sbin/sshd -D -e -f <generated config>`
+`ai-singbox [usual options] --sshd PORT` runs `/usr/sbin/sshd -D -e -f <generated config>`
 as the container command, with `--pid` so that ending the job (or sshd) ends every session.
 
-Generated per launch under `~/.libd-ai-sandbox/sshd/` (host side, before start):
+Generated per launch under `~/.ai-singbox/sshd/` (host side, before start):
 
 - `ssh_host_ed25519_key`: created once, kept (default). `--sshd-host-key FILE` overrides; see
   the decisions below about `~/.ssh/id_rsa`.
@@ -50,18 +50,18 @@ Generated per launch under `~/.libd-ai-sandbox/sshd/` (host side, before start):
 
   ```text
   Port PORT
-  HostKey ~/.libd-ai-sandbox/sshd/ssh_host_ed25519_key
-  AuthorizedKeysFile ~/.libd-ai-sandbox/sshd/authorized_keys
-  PidFile ~/.libd-ai-sandbox/sshd/sshd.pid
+  HostKey ~/.ai-singbox/sshd/ssh_host_ed25519_key
+  AuthorizedKeysFile ~/.ai-singbox/sshd/authorized_keys
+  PidFile ~/.ai-singbox/sshd/sshd.pid
   StrictModes no
   PasswordAuthentication no
   KbdInteractiveAuthentication no
   AllowTcpForwarding local
   AllowAgentForwarding no
   X11Forwarding no
-  SetEnv LIBD_AI_SANDBOX=... LIBD_AI_SANDBOX_RW=... CODEX_HOME=... CLAUDE_CONFIG_DIR=...
+  SetEnv AI_SINGBOX=... AI_SINGBOX_RW=... CODEX_HOME=... CLAUDE_CONFIG_DIR=...
          XDG_CACHE_HOME=... R_PROFILE_USER=... DISABLE_AUTOUPDATER=1
-  ForceCommand /.libd-ai-sandbox/ssh-session
+  ForceCommand /.ai-singbox/ssh-session
   Subsystem sftp internal-sftp
   ```
 
@@ -79,7 +79,7 @@ Notes:
   the user's own keys are accepted.
 - `UsePAM` cannot work for a non-root sshd; it logs a harmless warning on RHEL.
 
-### sbatch template: `bin/libd-ai-positron-session` (or an example script)
+### sbatch template: `bin/ai-singbox-positron` (or an example script)
 
 Same shape as the current script, with sandbox options at the top:
 
@@ -93,11 +93,11 @@ Same shape as the current script, with sandbox options at the top:
 
 SANDBOX_OPTS=(--profile marmaypag-inventory)     # or: --write /dcs04/lieber/<lab>/<project>
 
-module use /path/to/libd_ai_sandbox/modulefiles
-module load libd_ai_sandbox
+module use /path/to/ai-singbox/modulefiles
+module load ai-singbox
 PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
 scontrol update JobId="$SLURM_JOB_ID" Comment="$PORT"
-exec libd-ai-sandbox "${SANDBOX_OPTS[@]}" --sshd "$PORT"
+exec ai-singbox "${SANDBOX_OPTS[@]}" --sshd "$PORT"
 ```
 
 The `scontrol` call runs on the host, before the container; inside, Slurm is unavailable.
@@ -106,17 +106,17 @@ The `scontrol` call runs on the host, before the container; inside, Slurm is una
 
 - No client change beyond accepting a new host key (the sandbox's own) the first time.
 - The Positron server is installed fresh into the synthetic home
-  (`~/.libd-ai-sandbox/home/.positron-server`, ~0.8 GB, durable home storage). Extensions and
+  (`~/.ai-singbox/home/.positron-server`, ~0.8 GB, durable home storage). Extensions and
   settings installed in sandboxed sessions stay separate from unsandboxed ones.
 - Editing project files in Positron is subject to the same rules: folders you edit must be
   `--write` targets (or in a profile). This is the point, but users should expect it.
 
 ## Decisions and findings (2026-10-07, after review)
 
-- **Shipped command/template.** `bin/libd-ai-positron-session` is an sbatch script the user copies
+- **Shipped command/template.** `bin/ai-singbox-positron` is an sbatch script the user copies
   and adapts (resources, profile or `--write` folders). `--sshd` stays a wrapper option.
 - **Host key: dedicated, decided.** The sandbox sshd uses its own host key, generated once
-  (`ssh-keygen -t ed25519`, no passphrase) at `~/.libd-ai-sandbox/sshd/ssh_host_ed25519_key` and
+  (`ssh-keygen -t ed25519`, no passphrase) at `~/.ai-singbox/sshd/ssh_host_ed25519_key` and
   kept. It is used for nothing else, so being readable inside the sandbox is harmless.
   `--sshd-host-key FILE` may point at another dedicated key, but the wrapper **refuses** a key
   whose public half is listed in `~/.ssh/authorized_keys`. Reason (measured): such a key is a
@@ -132,7 +132,7 @@ The `scontrol` call runs on the host, before the container; inside, Slurm is una
   laptop's ssh host entry used for these sessions:
 
   ```text
-  HostKeyAlias libd-ai-sandbox-<user>
+  HostKeyAlias ai-singbox-<user>
   ```
 
   Then one manual `ssh` to the first sandboxed session records the key under that alias, and
@@ -151,27 +151,27 @@ The `scontrol` call runs on the host, before the container; inside, Slurm is una
 | Situation | Behaviour | Remedy |
 |---|---|---|
 | first sandboxed session | unknown host key; Positron cannot prompt and fails | one manual `ssh` to the session, accept the key |
-| later jobs, other node/port | `known_hosts` is keyed by host:port, so a new entry would be needed each time | `HostKeyAlias libd-ai-sandbox-<user>` in the laptop's ssh host entry: one entry for all jobs |
+| later jobs, other node/port | `known_hosts` is keyed by host:port, so a new entry would be needed each time | `HostKeyAlias ai-singbox-<user>` in the laptop's ssh host entry: one entry for all jobs |
 | same ssh host entry used for the old unsandboxed script (`-h ~/.ssh/id_rsa`) | two different host keys under one alias: mismatch error | separate host entries for sandboxed and unsandboxed sessions |
-| host key regenerated (`~/.libd-ai-sandbox/sshd/` deleted) | `REMOTE HOST IDENTIFICATION HAS CHANGED` | `ssh-keygen -R libd-ai-sandbox-<user>`, reconnect manually |
+| host key regenerated (`~/.ai-singbox/sshd/` deleted) | `REMOTE HOST IDENTIFICATION HAS CHANGED` | `ssh-keygen -R ai-singbox-<user>`, reconnect manually |
 | client already uses `StrictHostKeyChecking no` + `UserKnownHostsFile /dev/null` for nodes | works, no prompts | none (but no host verification) |
 | several sandboxed jobs at once | same key, same alias | none |
 
-The host key lives in `~/.libd-ai-sandbox/sshd/`, outside the sandbox home, so `--reset-home`
+The host key lives in `~/.ai-singbox/sshd/`, outside the sandbox home, so `--reset-home`
 does not change it. Positron's Remote-SSH uses the laptop's normal ssh configuration, so the
 alias applies to it.
 
 ## Open questions
 
 - Copy all of `~/.ssh/authorized_keys`, or only keys marked for the sandbox
-  (e.g. `~/.config/libd-ai-sandbox/authorized_keys`)?
+  (e.g. `~/.config/ai-singbox/authorized_keys`)?
 - Does the Posit Assistant need anything beyond network access from the node? To verify in a
   real session.
 
 ## Tests to add with the implementation
 
 Start `--sshd` on a free localhost port with a throwaway client key, then over ssh: synthetic
-home, ro write fails, `$LIBD_AI_SANDBOX_RW` present (SetEnv), modules from the profile loaded,
+home, ro write fails, `$AI_SINGBOX_RW` present (SetEnv), modules from the profile loaded,
 agent CLIs on `PATH`, sbatch denied, local forward works, agent forwarding refused, and no
 process left after the sandbox is stopped. Refusals: `--sshd-host-key` pointing at a key listed
 in `authorized_keys`; `--sshd` without a port. The host key is created once and reused (same
