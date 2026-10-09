@@ -142,7 +142,7 @@ get() { printf '%s\n' "$OUT" | awk -F'\t' -v k="$1" '$1==k{print $2}'; }
     && ok "home writes land in synthetic home ($T/home), real home untouched" || bad "synthetic home"
 [ "$(get scratch_write)" = ok ] && ok "\$MYSCRATCH writable" || bad "\$MYSCRATCH write"
 [ "$(get writetarget_write)" = ok ] && [ -f "$WT/$TAG" ] && ok "--write target writable" || bad "--write target"
-[ "$(get tmp_write)" = ok ] && [ -f "$MYSCRATCH/ai-sandbox/work/tmp/$TAG" ] && ok "/tmp is scratch-backed" || bad "/tmp"
+[ "$(get tmp_write)" = ok ] && [ -f "$MYSCRATCH/ai-singbox/work/tmp/$TAG" ] && ok "/tmp is scratch-backed" || bad "/tmp"
 for d in "${RO_TARGETS[@]}"; do
     v=$(get "ro_write:$d")
     if [ "$v" = blocked ] && [ ! -e "$d/$TAG" ]; then ok "write blocked: $d"
@@ -150,7 +150,7 @@ for d in "${RO_TARGETS[@]}"; do
 done
 [ "$(get skel)" = "from skel" ] && ok "skel file copied into synthetic home" || bad "skel :: $(get skel)"
 [ "$(get editor)" = nano ] && ok "EDITOR=nano from generated .bashrc" || bad "EDITOR :: $(get editor)"
-[ "$(get cache)" = "$MYSCRATCH/ai-sandbox/cache" ] && ok "XDG_CACHE_HOME in scratch" || bad "cache :: $(get cache)"
+[ "$(get cache)" = "$MYSCRATCH/ai-singbox/cache" ] && ok "XDG_CACHE_HOME in scratch" || bad "cache :: $(get cache)"
 if [ -n "$READ_LINK" ]; then
     [ "$(get readlink_visible)" = yes ] && [ "$(get readlink_write)" = blocked ] && [ ! -e "$READ_LINK/$TAG" ] \
         && ok "--read of symlinked $READ_LINK visible at its own path, read-only" || bad "--read symlink :: $(get readlink_visible)/$(get readlink_write)"
@@ -274,7 +274,7 @@ while IFS=$'\t' read -r k v; do
 done <<<"$OUT"
 
 # cleanup (explicit files only)
-for f in "$T/home/$TAG" "$MYSCRATCH/$TAG" "$WT/$TAG" "$MYSCRATCH/ai-sandbox/work/tmp/$TAG"; do
+for f in "$T/home/$TAG" "$MYSCRATCH/$TAG" "$WT/$TAG" "$MYSCRATCH/ai-singbox/work/tmp/$TAG"; do
     [ -e "$f" ] && unlink "$f"
 done
 rmdir "$WT" 2>/dev/null

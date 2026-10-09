@@ -95,8 +95,8 @@ Inside the container the agent sees:
 | `$MYSCRATCH` | host | **rw** by default (`--no-scratch` to drop) |
 | any `--write PATH` | host | **rw**, at the path as typed |
 | `$HOME` | depends on `--home-mode` (§8) | synthetic rw / real ro / real rw |
-| `/tmp`, `/var/tmp` | `$MYSCRATCH/ai-sandbox/work/{tmp,var_tmp}` | rw |
-| `$XDG_CACHE_HOME` | `$MYSCRATCH/ai-sandbox/cache` | rw |
+| `/tmp`, `/var/tmp` | `$MYSCRATCH/ai-singbox/work/{tmp,var_tmp}` | rw |
+| `$XDG_CACHE_HOME` | `$MYSCRATCH/ai-singbox/cache` | rw |
 | everything else (skeleton) | `share/rootfs` | ro, empty |
 
 `$MYSCRATCH` is writable because it is the user's own purge-able scratch space and the natural

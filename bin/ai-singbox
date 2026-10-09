@@ -322,7 +322,7 @@ esac
 MYSCRATCH=$(readlink -f "$MYSCRATCH")
 [ -d "$MYSCRATCH" ] && [ -O "$MYSCRATCH" ] || die "MYSCRATCH ($MYSCRATCH) is not a directory you own"
 [ -d "$REAL_HOME" ] || die "cannot determine your home directory"
-SCR=$MYSCRATCH/ai-sandbox
+SCR=$MYSCRATCH/ai-singbox
 SBX_WORK=$SCR/work
 SBX_CACHE=$SCR/cache
 

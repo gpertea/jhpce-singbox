@@ -144,7 +144,7 @@ exit
 | `/usr`, `/etc`, `/opt` (the node's own system) | read-only |
 | `$MYSCRATCH` (`/fastscratch/myscratch/$USER`) | **writable** (`--no-scratch` to turn off) |
 | `$HOME` | **writable**, but it is a separate sandbox home, not your real home ([details](#your-sandbox-home-and-session-setup)) |
-| `/tmp` | **writable**, backed by `$MYSCRATCH/ai-sandbox/work/tmp` |
+| `/tmp` | **writable**, backed by `$MYSCRATCH/ai-singbox/work/tmp` |
 | the `write =` folders of your profile, and each `--write PATH` | **writable** |
 | each `--read PATH` | read-only |
 
@@ -399,7 +399,7 @@ profiles < command line.
 | `~/.ai-singbox/home/` | the default session home (`$HOME` inside) |
 | `~/.ai-singbox/logs/` | one JSON record per launch |
 | `~/.ai-singbox/agents/` | agent config folders when a real home is used |
-| `$MYSCRATCH/ai-sandbox/work/`, `.../cache/` | `/tmp` and caches |
+| `$MYSCRATCH/ai-singbox/work/`, `.../cache/` | `/tmp` and caches |
 | `<module>/etc/profiles/` | site profiles, including `default.conf` |
 | `<module>/etc/mounts.tsv`, `etc/deny-commands.txt` | system mounts and masked commands (maintainers) |
 

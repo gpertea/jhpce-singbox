@@ -7,16 +7,16 @@
 #
 # Example (setuid Singularity, the recommended runtime):
 #   tests/runtime_probe.sh /jhpce/shared/jhpce/core/singularity/3.11.4/bin/singularity \
-#       $MYSCRATCH/ai-sandbox/images/rocky9.sif /dcs04/lieber/<lab>/<your-dir>
+#       $MYSCRATCH/ai-singbox/images/rocky9.sif /dcs04/lieber/<lab>/<your-dir>
 #
-# All scratch state goes under $MYSCRATCH/ai-sandbox-probe and is removed at the end.
+# All scratch state goes under $MYSCRATCH/ai-singbox-probe and is removed at the end.
 # Any file that unexpectedly appears in the read-only test dir is reported and removed.
 set -u
 BIN="${1:?runtime binary}"; IMG="${2:?sif image}"
 PROJ="${3:-/dcs04/lieber/lcolladotor/dbDev_LIBD001/jhpce-singbox}"
 RO_ROOT=$(echo "$PROJ" | cut -d/ -f1-3)          # e.g. /dcs04/lieber
 : "${MYSCRATCH:?MYSCRATCH must be set}"
-T=$MYSCRATCH/ai-sandbox-probe
+T=$MYSCRATCH/ai-singbox-probe
 mkdir -p "$T/home" "$T/work" "$T/out" "$T/payload"
 HOME_FLAGS=(--contain --cleanenv --home "$T/home:$HOME")
 

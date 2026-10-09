@@ -67,7 +67,7 @@ Wrapper changes:
   into `<prefix>/share/rootfs`, `chmod -R a+rX,go-w`, write `<prefix>/VERSION`. Refuse to install
   over an existing version.
 - One version number: wrapper `VERSION`, git tag `v<version>`, modulefile name `<version>.lua`
-  (today the modulefile is `0.1` and the wrapper `0.4.0-dev`). Keep `CHANGELOG.md`.
+  (today the modulefile is `0.1` and the wrapper `0.5.0-dev`). Keep `CHANGELOG.md`.
 - The skeleton root (`share/rootfs`) and the wrapper's `ROOT` are on `/jhpce/shared`, already
   visible on every node; nothing else needs deploying per node.
 - Lab-specific storage lives only in site profiles (`etc/profiles/libd.conf`: `read =
@@ -93,7 +93,7 @@ Wrapper changes:
   keep the worked example; add "installing an agent in your sandbox home" and "agent modules".
 - `docs/admin.md` (maintainers): site mounts file, deny list, site profiles and agent descriptors,
   install/upgrade/rollback, how to run the tests, where users' state lives
-  (`~/.ai-singbox`, `~/.config/ai-singbox`, `$MYSCRATCH/ai-sandbox`).
+  (`~/.ai-singbox`, `~/.config/ai-singbox`, `$MYSCRATCH/ai-singbox`).
 
 ## 5. Tests that run for any maintainer
 

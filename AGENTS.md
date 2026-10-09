@@ -68,7 +68,7 @@ user did not designate?
    for speed and correct group display. Call runtimes by absolute path; the site runtime
    modulefiles fail in non-interactive shells.
 9. **Inspectable.** `--dry-run` prints the bind table and exact command; every launch is logged as
-   JSON under `$MYSCRATCH/ai-sandbox/logs`.
+   JSON under `~/.ai-singbox/logs`.
 10. **Tests before features.** `tests/test_wrapper.sh` must pass on a transfer node and on a
     compute node. Tests that attempt writes to read-only paths check the host afterwards and
     remove any leak.
